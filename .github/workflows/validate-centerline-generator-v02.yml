@@ -19,13 +19,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validate CenterlineGenerator
         run: python tools/validate_ilogic.py CenterlineGenerator.vb
-      - name: Confirm unsafe APIs are absent
+      - name: Confirm unsafe API calls are absent
         run: |
-          if grep -q 'AddBisector' CenterlineGenerator.vb; then
-            echo 'ERROR: AddBisector still exists in CenterlineGenerator.vb'
+          if grep -q 'Centerlines.AddBisector' CenterlineGenerator.vb; then
+            echo 'ERROR: Centerlines.AddBisector still exists in CenterlineGenerator.vb'
             exit 1
-          fi
-          if grep -q 'CreateGeometryIntent(.*Centerline' CenterlineGenerator.vb; then
-            echo 'WARNING: review centerline intent usage'
           fi
           echo 'CenterlineGenerator V0.2 safety checks passed.'

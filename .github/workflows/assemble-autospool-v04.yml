@@ -1,0 +1,47 @@
+name: Assemble AutoSpool V0.4
+
+on:
+  push:
+    paths:
+      - '.github/workflows/assemble-autospool-v04.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  assemble:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reconstruct Topology Extractor V0.4
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .autospool_stage/code.b64.part1 .autospool_stage/code.b64.part2 | base64 -d | gunzip > "Topology Extractor.iLogicVb"
+          test -s "Topology Extractor.iLogicVb"
+          echo "Generated $(wc -c < 'Topology Extractor.iLogicVb') bytes"
+
+      - name: Remove staging files
+        shell: bash
+        run: |
+          rm -rf .autospool_stage .autospool_parts
+          rm -f .chatgpt-write-test
+          rm -f .github/workflows/assemble-autospool-v04.yml
+
+      - name: Commit V0.4
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "Update Topology Extractor to AutoSpool V0.4"
+          git push origin HEAD:main

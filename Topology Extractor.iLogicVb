@@ -1,4 +1,4 @@
-﻿AddReference "System.Windows.Forms"
+AddReference "System.Windows.Forms.dll"
 
 Imports System
 Imports System.Text

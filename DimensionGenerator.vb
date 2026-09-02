@@ -178,7 +178,7 @@ Sub Main()
                 allAnchors)
 
         Logger.Info( _
-            "Projected semantic anchors: " & _
+            "Semantic anchors ready (physical or directional center): " & _
             (allAnchors.Count - unresolvedAnchors).ToString() & _
             "/" & allAnchors.Count.ToString())
 
@@ -194,7 +194,7 @@ Sub Main()
                 chainRequests)
 
         Dim attachmentCount As Integer = 0
-        Logger.Info("V0.6.3.1 stable mode: projected-curve chains enabled; fitting-center and attachment dimensions deferred.")
+        Logger.Info("V0.7: projected-curve chains enabled; fitting centers use ONE existing perpendicular centerline; attachment dimensions remain deferred.")
 
 
         drawDoc.Update2(True)
@@ -206,13 +206,13 @@ Sub Main()
             "Chain dimension sets / fallback dims: " & chainCount.ToString() & vbCrLf & _
             "Overall dimensions: " & overallCount.ToString() & vbCrLf & _
             "Attachment dimensions/sets: " & attachmentCount.ToString(), _
-            "DimensionGenerator V0.6.3.1")
+            "DimensionGenerator V0.7")
 
 
     Catch ex As Exception
 
         MessageBox.Show( _
-            "DimensionGenerator V0.6.3.1 failed:" & vbCrLf & vbCrLf & _
+            "DimensionGenerator V0.7 failed:" & vbCrLf & vbCrLf & _
             ex.Message, _
             "Auto Dimensions")
 
@@ -4700,7 +4700,7 @@ End Function
 
 
 ' ===================================================================
-' DIMENSION GENERATOR V0.6.3.1 - STABLE PROJECTED CURVES + CHAINS
+' DIMENSION GENERATOR V0.7 - DIRECTIONAL CENTERLINE DATUMS + SAFE CHAINS
 ' ===================================================================
 
 Function GetTargetDrawingViewV01( _
@@ -4777,14 +4777,7 @@ Sub DeletePreviousAutoDimensionsV01(sheet As Sheet)
     Catch
     End Try
 
-    Try
-        For i As Integer = sheet.Centerlines.Count To 1 Step -1
-            If IsAutoTaggedV01(sheet.Centerlines.Item(i)) Then
-                sheet.Centerlines.Item(i).Delete()
-            End If
-        Next
-    Catch
-    End Try
+    ' V0.7: centerlines belong to CenterlineGenerator and are never deleted here.
 
 End Sub
 
@@ -5075,24 +5068,47 @@ Function ResolveProjectedAnchorsV03( _
             ResolveProjectedIntentV03( _
                 sheet, view, nodes, anchor)
 
-        If anchor.Intent Is Nothing Then
-            unresolved += 1
-
-            Dim nearNode As NodeRecord = _
-                FindReferenceNodeAtPointV03( _
-                    nodes, anchor.X, anchor.Y, anchor.Z, 1.0)
-
-            Dim semanticName As String = "UNKNOWN"
-            If nearNode IsNot Nothing Then
-                semanticName = _
-                    nearNode.Code & "/" & nearNode.ComponentType & "/" & nearNode.ReferenceType
-            End If
-
-            Logger.Error( _
-                "No projected geometry for semantic anchor " & semanticName & _
-                " at model mm (" & _
-                Num(anchor.X) & ", " & Num(anchor.Y) & ", " & Num(anchor.Z) & ")")
+        If anchor.Intent IsNot Nothing Then
+            Continue For
         End If
+
+        Dim nearNode As NodeRecord = _
+            FindReferenceNodeAtPointV03( _
+                nodes, anchor.X, anchor.Y, anchor.Z, 1.0)
+
+        ' TEE / ELBOW centres are theoretical points.  Do NOT manufacture an
+        ' intersection GeometryIntent.  Mark them as directional datums; the
+        ' actual dimension direction later chooses ONE existing centerline.
+        If nearNode IsNot Nothing AndAlso _
+           (nearNode.ComponentType = "TEE" OrElse _
+            nearNode.ComponentType = "ELBOW") Then
+
+            anchor.IsFittingCenter = True
+            anchor.FittingCode = nearNode.Code
+            anchor.FittingType = nearNode.ComponentType
+            anchor.SourceDescription = _
+                nearNode.Code & " DIRECTIONAL CENTERLINE DATUM"
+
+            Logger.Info( _
+                "CENTER_ANCHOR READY " & _
+                nearNode.Code & "/" & nearNode.ComponentType & _
+                " | center will use one perpendicular existing centerline")
+
+            Continue For
+        End If
+
+        unresolved += 1
+
+        Dim semanticName As String = "UNKNOWN"
+        If nearNode IsNot Nothing Then
+            semanticName = _
+                nearNode.Code & "/" & nearNode.ComponentType & "/" & nearNode.ReferenceType
+        End If
+
+        Logger.Error( _
+            "No projected geometry for semantic anchor " & semanticName & _
+            " at model mm (" & _
+            Num(anchor.X) & ", " & Num(anchor.Y) & ", " & Num(anchor.Z) & ")")
 
     Next
 
@@ -5270,29 +5286,178 @@ Function ResolveFittingCenterIntentV04( _
     node As NodeRecord, _
     target As Point2d) As GeometryIntent
 
-    ' V0.6.3.1 PRODUCTION SAFETY
-    ' Do NOT consume centerlines in the production dimension rule yet.
-    '
-    ' Proven stable:
-    '   - real projected DrawingCurve intents
-    '   - native ChainDimensionSet
-    '   - separate CenterlineGenerator creating PIPE / FLANGE centerlines
-    '
-    ' Not yet proven safe:
-    '   - centerline GeometryIntent inside a dimension
-    '   - centerline/centerline intersection GeometryIntent
-    '
-    ' These are isolated in CenterlineDimensionProbe.vb before being
-    ' reintroduced here.
+    ' V0.7 SAFETY: never create or consume a centerline intersection here.
+    ' Fitting-centre anchors are marked in ResolveProjectedAnchorsV03 and the
+    ' dimension direction later resolves ONE perpendicular native centerline.
+    Return Nothing
+End Function
 
-    If node IsNot Nothing Then
-        Logger.Info( _
-            "CENTER_INTENT DEFER " & _
-            node.Code & "/" & node.ComponentType & _
-            " | production rule will not consume centerlines")
+
+Function ResolveAnchorIntentForDimensionV07( _
+    sheet As Sheet, _
+    anchor As AutoDimAnchorV01, _
+    dimensionType As DimensionTypeEnum) As GeometryIntent
+
+    If anchor Is Nothing Then Return Nothing
+
+    If anchor.Intent IsNot Nothing Then
+        Return anchor.Intent
     End If
 
+    If Not anchor.IsFittingCenter Then Return Nothing
+
+    If dimensionType = DimensionTypeEnum.kHorizontalDimensionType Then
+        If anchor.HorizontalDimensionIntent IsNot Nothing Then
+            Return anchor.HorizontalDimensionIntent
+        End If
+
+        Dim verticalAxis As Centerline = _
+            FindDirectionalCenterlineDatumV07( _
+                sheet, anchor.SheetPoint, True)
+
+        If verticalAxis Is Nothing Then
+            Logger.Error( _
+                "CENTER_DATUM missing vertical axis for horizontal dimension | " & _
+                anchor.FittingCode & "/" & anchor.FittingType)
+            Return Nothing
+        End If
+
+        Try
+            anchor.HorizontalDimensionIntent = _
+                sheet.CreateGeometryIntent(verticalAxis)
+
+            Logger.Info( _
+                "CENTER_DATUM " & anchor.FittingCode & "/" & anchor.FittingType & _
+                " | horizontal dimension -> ONE vertical centerline")
+
+            Return anchor.HorizontalDimensionIntent
+        Catch ex As Exception
+            Logger.Error( _
+                "CENTER_DATUM vertical centerline intent failed for " & _
+                anchor.FittingCode & ": " & ex.Message)
+            Return Nothing
+        End Try
+    End If
+
+    If dimensionType = DimensionTypeEnum.kVerticalDimensionType Then
+        If anchor.VerticalDimensionIntent IsNot Nothing Then
+            Return anchor.VerticalDimensionIntent
+        End If
+
+        Dim horizontalAxis As Centerline = _
+            FindDirectionalCenterlineDatumV07( _
+                sheet, anchor.SheetPoint, False)
+
+        If horizontalAxis Is Nothing Then
+            Logger.Error( _
+                "CENTER_DATUM missing horizontal axis for vertical dimension | " & _
+                anchor.FittingCode & "/" & anchor.FittingType)
+            Return Nothing
+        End If
+
+        Try
+            anchor.VerticalDimensionIntent = _
+                sheet.CreateGeometryIntent(horizontalAxis)
+
+            Logger.Info( _
+                "CENTER_DATUM " & anchor.FittingCode & "/" & anchor.FittingType & _
+                " | vertical dimension -> ONE horizontal centerline")
+
+            Return anchor.VerticalDimensionIntent
+        Catch ex As Exception
+            Logger.Error( _
+                "CENTER_DATUM horizontal centerline intent failed for " & _
+                anchor.FittingCode & ": " & ex.Message)
+            Return Nothing
+        End Try
+    End If
+
+    Logger.Info( _
+        "CENTER_DATUM aligned fitting-center dimension deferred for " & _
+        anchor.FittingCode & "/" & anchor.FittingType)
+
     Return Nothing
+End Function
+
+
+Function FindDirectionalCenterlineDatumV07( _
+    sheet As Sheet, _
+    target As Point2d, _
+    wantVerticalAxis As Boolean) As Centerline
+
+    If sheet Is Nothing OrElse target Is Nothing Then Return Nothing
+
+    Dim best As Centerline = Nothing
+    Dim bestScore As Double = Double.MaxValue
+
+    Try
+        For i As Integer = 1 To sheet.Centerlines.Count
+
+            Dim cl As Centerline = sheet.Centerlines.Item(i)
+            If cl Is Nothing Then Continue For
+
+            Dim a As Point2d = Nothing
+            Dim b As Point2d = Nothing
+
+            Try
+                a = cl.StartPoint
+                b = cl.EndPoint
+            Catch
+                Continue For
+            End Try
+
+            If a Is Nothing OrElse b Is Nothing Then Continue For
+
+            Dim dx As Double = b.X - a.X
+            Dim dy As Double = b.Y - a.Y
+            Dim length As Double = Math.Sqrt(dx * dx + dy * dy)
+            If length < 0.001 Then Continue For
+
+            Dim ux As Double = dx / length
+            Dim uy As Double = dy / length
+
+            Dim orientation As Double
+            If wantVerticalAxis Then
+                orientation = Math.Abs(uy)
+            Else
+                orientation = Math.Abs(ux)
+            End If
+
+            ' Horizontal dimensions need a near-vertical datum; vertical
+            ' dimensions need a near-horizontal datum.
+            If orientation < 0.96 Then Continue For
+
+            Dim axisDistance As Double = _
+                DistancePointToInfiniteLineV03(target, a, b)
+
+            ' 0.18 cm = 1.8 mm on the sheet.  The topology-projected fitting
+            ' centre should lie essentially on the correct pipe/flange axis.
+            If axisDistance > 0.18 Then Continue For
+
+            Dim tagBonus As Double = 0
+            Try
+                Dim tags As AttributeSet = _
+                    cl.AttributeSets.Item("AutoSpoolCenterline")
+                If tags IsNot Nothing Then tagBonus = -0.02
+            Catch
+            End Try
+
+            Dim score As Double = _
+                axisDistance + _
+                (1.0 - orientation) * 0.20 + _
+                tagBonus
+
+            If best Is Nothing OrElse score < bestScore Then
+                best = cl
+                bestScore = score
+            End If
+        Next
+    Catch ex As Exception
+        Logger.Error("CENTER_DATUM centerline scan failed: " & ex.Message)
+        Return Nothing
+    End Try
+
+    Return best
 End Function
 
 
@@ -6918,17 +7083,45 @@ Function CreateChainDimensionsV01( _
 
         If request.Anchors.Count < 2 Then Continue For
 
+        Dim usesDirectionalCenter As Boolean = False
+
         Try
             Dim intents As ObjectCollection = _
                 ThisApplication.TransientObjects.CreateObjectCollection()
 
             For Each anchor As AutoDimAnchorV01 In request.Anchors
-                If anchor.Intent IsNot Nothing Then
-                    intents.Add(anchor.Intent)
+
+                If anchor.IsFittingCenter Then
+                    usesDirectionalCenter = True
+                End If
+
+                Dim resolvedIntent As GeometryIntent = _
+                    ResolveAnchorIntentForDimensionV07( _
+                        sheet, anchor, request.DimensionType)
+
+                If resolvedIntent IsNot Nothing Then
+                    intents.Add(resolvedIntent)
                 End If
             Next
 
             If intents.Count < 2 Then Continue For
+
+            ' ChainDimensionSet + centerline GeometryIntent is not yet proven
+            ' in this Inventor build.  Keep native chain sets for pure projected
+            ' geometry, and use the already-proven AddLinear path when a fitting
+            ' center is involved. CenterlineChainProbe validates the final step.
+            If usesDirectionalCenter Then
+                Logger.Info( _
+                    "CENTER_CHAIN SAFE_FALLBACK " & request.Name & _
+                    " | using individual linear dimensions until chain probe passes")
+
+                created += _
+                    CreateIndividualChainFallbackV02( _
+                        sheet, _
+                        request)
+
+                Continue For
+            End If
 
             Dim dimSet As ChainDimensionSet = _
                 sheet.DrawingDimensions.ChainDimensionSets.Add( _
@@ -6981,9 +7174,12 @@ Function CreateIndividualChainFallbackV02( _
             Dim b As AutoDimAnchorV01 = request.Anchors.Item(i + 1)
 
             Dim intent1 As GeometryIntent = _
-                a.Intent
+                ResolveAnchorIntentForDimensionV07( _
+                    sheet, a, request.DimensionType)
+
             Dim intent2 As GeometryIntent = _
-                b.Intent
+                ResolveAnchorIntentForDimensionV07( _
+                    sheet, b, request.DimensionType)
 
             If intent1 Is Nothing OrElse intent2 Is Nothing Then
                 Continue For
@@ -7051,8 +7247,6 @@ Function CreateOverallDimensionsV01( _
 
     For Each request As AutoChainRequestV01 In requests
 
-        ' If there are only two anchors, the chain already represents
-        ' a single dimension and an identical overall would be redundant.
         If request.Anchors.Count <= 2 Then Continue For
 
         Try
@@ -7060,13 +7254,17 @@ Function CreateOverallDimensionsV01( _
             Dim lastAnchor As AutoDimAnchorV01 = _
                 request.Anchors.Item(request.Anchors.Count - 1)
 
-            If firstAnchor.Intent Is Nothing OrElse _
-               lastAnchor.Intent Is Nothing Then
+            Dim intent1 As GeometryIntent = _
+                ResolveAnchorIntentForDimensionV07( _
+                    sheet, firstAnchor, request.DimensionType)
+
+            Dim intent2 As GeometryIntent = _
+                ResolveAnchorIntentForDimensionV07( _
+                    sheet, lastAnchor, request.DimensionType)
+
+            If intent1 Is Nothing OrElse intent2 Is Nothing Then
                 Continue For
             End If
-
-            Dim intent1 As GeometryIntent = firstAnchor.Intent
-            Dim intent2 As GeometryIntent = lastAnchor.Intent
 
             Dim dimObj As LinearGeneralDimension = _
                 sheet.DrawingDimensions.GeneralDimensions.AddLinear( _
@@ -7351,7 +7549,17 @@ Class AutoDimAnchorV01
     Public Y As Double
     Public Z As Double
     Public SheetPoint As Point2d = Nothing
+
+    ' Physical projected-curve intent.
     Public Intent As GeometryIntent = Nothing
+
+    ' Theoretical TEE / ELBOW centers are direction dependent.
+    Public IsFittingCenter As Boolean = False
+    Public FittingCode As String = ""
+    Public FittingType As String = ""
+    Public HorizontalDimensionIntent As GeometryIntent = Nothing
+    Public VerticalDimensionIntent As GeometryIntent = Nothing
+
     Public SourceDescription As String = ""
 End Class
 

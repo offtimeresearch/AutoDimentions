@@ -141,7 +141,15 @@ Sub Main()
         ' BUILD DRAWING-DIMENSION PLAN.
         ' =============================================================
 
+        Logger.Info( _
+            "CENTERLINE_COUNT BEFORE_CLEANUP=" & _
+            sheet.Centerlines.Count.ToString())
+
         DeletePreviousAutoDimensionsV01(sheet)
+
+        Logger.Info( _
+            "CENTERLINE_COUNT AFTER_CLEANUP=" & _
+            sheet.Centerlines.Count.ToString())
 
         Dim allAnchors As New List(Of AutoDimAnchorV01)
 
@@ -170,6 +178,10 @@ Sub Main()
         End If
 
 
+        Logger.Info( _
+            "CENTERLINE_COUNT BEFORE_RESOLVE=" & _
+            sheet.Centerlines.Count.ToString())
+
         Dim unresolvedAnchors As Integer = _
             ResolveProjectedAnchorsV03( _
                 sheet, _
@@ -194,7 +206,7 @@ Sub Main()
                 chainRequests)
 
         Dim attachmentCount As Integer = 0
-        Logger.Info("V0.7.1: fitting centers use ONE existing centerline as an infinite directional datum; attachment dimensions remain deferred.")
+        Logger.Info("V0.7.2: centerline preservation diagnostics enabled; fitting centers still use ONE existing directional centerline; attachments deferred.")
 
 
         drawDoc.Update2(True)
@@ -206,13 +218,13 @@ Sub Main()
             "Chain dimension sets / fallback dims: " & chainCount.ToString() & vbCrLf & _
             "Overall dimensions: " & overallCount.ToString() & vbCrLf & _
             "Attachment dimensions/sets: " & attachmentCount.ToString(), _
-            "DimensionGenerator V0.7.1")
+            "DimensionGenerator V0.7.2")
 
 
     Catch ex As Exception
 
         MessageBox.Show( _
-            "DimensionGenerator V0.7.1 failed:" & vbCrLf & vbCrLf & _
+            "DimensionGenerator V0.7.2 failed:" & vbCrLf & vbCrLf & _
             ex.Message, _
             "Auto Dimensions")
 
@@ -4700,7 +4712,7 @@ End Function
 
 
 ' ===================================================================
-' DIMENSION GENERATOR V0.7.1 - EXTENDED DIRECTIONAL CENTERLINE DATUMS
+' DIMENSION GENERATOR V0.7.2 - EXTENDED DIRECTIONAL CENTERLINE DATUMS
 ' ===================================================================
 
 Function GetTargetDrawingViewV01( _
@@ -4734,6 +4746,10 @@ End Function
 
 Sub DeletePreviousAutoDimensionsV01(sheet As Sheet)
 
+    ' V0.7.2 HARD SAFETY BOUNDARY:
+    ' This routine deletes only annotations created by DimensionGenerator.
+    ' Drawing center axes are owned by CenterlineGenerator V0.2.
+
     Try
         Dim chainSets As ChainDimensionSets = _
             sheet.DrawingDimensions.ChainDimensionSets
@@ -4743,7 +4759,8 @@ Sub DeletePreviousAutoDimensionsV01(sheet As Sheet)
                 chainSets.Item(i).Delete()
             End If
         Next
-    Catch
+    Catch ex As Exception
+        Logger.Error("Cleanup chain dimensions failed: " & ex.Message)
     End Try
 
     Try
@@ -4755,7 +4772,8 @@ Sub DeletePreviousAutoDimensionsV01(sheet As Sheet)
                 baselineSets.Item(i).Delete()
             End If
         Next
-    Catch
+    Catch ex As Exception
+        Logger.Error("Cleanup baseline dimensions failed: " & ex.Message)
     End Try
 
     Try
@@ -4767,7 +4785,8 @@ Sub DeletePreviousAutoDimensionsV01(sheet As Sheet)
                 generalDimensions.Item(i).Delete()
             End If
         Next
-    Catch
+    Catch ex As Exception
+        Logger.Error("Cleanup general dimensions failed: " & ex.Message)
     End Try
 
     Try
@@ -4776,8 +4795,6 @@ Sub DeletePreviousAutoDimensionsV01(sheet As Sheet)
         oldSketch.Delete()
     Catch
     End Try
-
-    ' V0.7: centerlines belong to CenterlineGenerator and are never deleted here.
 
 End Sub
 

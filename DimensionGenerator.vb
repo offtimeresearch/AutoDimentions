@@ -206,13 +206,13 @@ Sub Main()
             "Chain dimension sets / fallback dims: " & chainCount.ToString() & vbCrLf & _
             "Overall dimensions: " & overallCount.ToString() & vbCrLf & _
             "Attachment dimensions/sets: " & attachmentCount.ToString(), _
-            "DimensionGenerator V0.5")
+            "DimensionGenerator V0.5.1")
 
 
     Catch ex As Exception
 
         MessageBox.Show( _
-            "DimensionGenerator V0.5 failed:" & vbCrLf & vbCrLf & _
+            "DimensionGenerator V0.5.1 failed:" & vbCrLf & vbCrLf & _
             ex.Message, _
             "Auto Dimensions")
 
@@ -4700,7 +4700,7 @@ End Function
 
 
 ' ===================================================================
-' DIMENSION GENERATOR V0.5 - TOPOLOGY-GUIDED BISECTORS + CHAINS
+' DIMENSION GENERATOR V0.5.1 - STABLE PROJECTED CURVES + CHAINS
 ' ===================================================================
 
 Function GetTargetDrawingViewV01( _
@@ -5270,54 +5270,21 @@ Function ResolveFittingCenterIntentV04( _
     node As NodeRecord, _
     target As Point2d) As GeometryIntent
 
-    ' ===============================================================
-    ' V0.5
-    ' Use the fitting's USED topology port axes to tell Inventor which
-    ' centreline directions we actually need.  For each visible axis we
-    ' search the fitting + directly connected occurrences for the two
-    ' projected silhouette lines parallel to that axis and create the
-    ' native Inventor Centerline using Centerlines.AddBisector.
-    ' ===============================================================
+    ' V0.5.1 STABLE MODE
+    ' Native ChainDimensionSet is proven stable.
+    ' Real projected DrawingCurve intents are proven stable.
+    '
+    ' IMPORTANT:
+    ' Centerlines.AddBisector is deliberately NOT called from the production
+    ' dimension generator because the Inventor native process crashed when
+    ' the API call was exercised.  Centre-dependent dimensions are skipped
+    ' until the centerline API path is validated in a separate diagnostic rule.
 
-    Dim centerlines As List(Of Centerline) = _
-        CreateTopologyGuidedBisectorsV05( _
-            sheet, _
-            view, _
-            node, _
-            target)
-
-    If centerlines.Count >= 2 Then
-        For i As Integer = 0 To centerlines.Count - 2
-            For j As Integer = i + 1 To centerlines.Count - 1
-
-                If CenterlinesParallelV03( _
-                    centerlines.Item(i), _
-                    centerlines.Item(j)) Then
-                    Continue For
-                End If
-
-                Try
-                    Return _
-                        sheet.CreateGeometryIntent( _
-                            centerlines.Item(i), _
-                            centerlines.Item(j))
-                Catch ex As Exception
-                    Logger.Error( _
-                        "Centerline intersection intent failed for " & _
-                        node.Code & ": " & ex.Message)
-                End Try
-            Next
-        Next
-    End If
-
-    If centerlines.Count = 1 Then
-        Try
-            Return sheet.CreateGeometryIntent(centerlines.Item(0))
-        Catch ex As Exception
-            Logger.Error( _
-                "Single centerline intent failed for " & _
-                node.Code & ": " & ex.Message)
-        End Try
+    If node IsNot Nothing Then
+        Logger.Info( _
+            "Center-dependent anchor deferred for " & _
+            node.Code & "/" & node.ComponentType & _
+            " (AddBisector isolated from production rule)")
     End If
 
     Return Nothing

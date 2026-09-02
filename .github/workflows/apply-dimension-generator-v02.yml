@@ -1,0 +1,32 @@
+name: Apply DimensionGenerator V0.2
+
+on:
+  push:
+    paths:
+      - '.github/workflows/apply-dimension-generator-v02.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Patch DimensionGenerator
+        run: python3 tools/patch_dimension_generator_v02.py
+
+      - name: Validate iLogic source
+        run: python3 tools/validate_ilogic.py DimensionGenerator.vb
+
+      - name: Commit corrected generator
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f tools/patch_dimension_generator_v02.py
+          rm -f .github/workflows/apply-dimension-generator-v02.yml
+          git add -A
+          git commit -m "Fix drawing geometry intents in DimensionGenerator V0.2"
+          git push

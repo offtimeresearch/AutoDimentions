@@ -1,0 +1,39 @@
+name: Apply Renderer V0.5
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'tools/patch_renderer_v05.py'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply renderer improvements
+        run: python3 tools/patch_renderer_v05.py TopologyExtractor.vb
+
+      - name: Validate patched iLogic source
+        run: python3 tools/validate_ilogic.py TopologyExtractor.vb
+
+      - name: Commit patched source
+        shell: bash
+        run: |
+          set -e
+          if git diff --quiet -- TopologyExtractor.vb; then
+            echo "No source changes required."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add TopologyExtractor.vb
+          git commit -m "Improve schematic renderer and dimension layout V0.5"
+          git push origin HEAD:main

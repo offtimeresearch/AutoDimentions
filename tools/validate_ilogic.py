@@ -4,7 +4,7 @@ import re
 import sys
 from pathlib import Path
 
-SRC = Path(sys.argv[1] if len(sys.argv) > 1 else "Topology Extractor.iLogicVb")
+SRC = Path(sys.argv[1] if len(sys.argv) > 1 else "TopologyExtractor.vb")
 raw = SRC.read_bytes()
 errors = []
 warnings = []

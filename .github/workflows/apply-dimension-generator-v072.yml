@@ -1,0 +1,52 @@
+name: Apply DimensionGenerator V0.7.2
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'tools/patch_dimension_generator_v072.py'
+      - '.github/workflows/apply-dimension-generator-v072.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Patch DimensionGenerator
+        run: python tools/patch_dimension_generator_v072.py
+
+      - name: Validate DimensionGenerator
+        run: python tools/validate_ilogic.py DimensionGenerator.vb
+
+      - name: Safety assertions
+        run: |
+          grep -q 'DimensionGenerator V0.7.2' DimensionGenerator.vb
+          grep -q 'CENTERLINE_COUNT BEFORE_CLEANUP=' DimensionGenerator.vb
+          grep -q 'CENTERLINE_COUNT AFTER_CLEANUP=' DimensionGenerator.vb
+          grep -q 'CENTERLINE_COUNT BEFORE_RESOLVE=' DimensionGenerator.vb
+          python - <<'PY'
+          import re
+          from pathlib import Path
+          t = Path('DimensionGenerator.vb').read_text(encoding='utf-8')
+          m = re.search(r'Sub\s+DeletePreviousAutoDimensionsV01\s*\(.*?\nEnd Sub', t, re.S|re.I)
+          assert m, 'cleanup function missing'
+          assert 'Centerlines' not in m.group(0), 'cleanup still references Centerlines'
+          print('V0.7.2 cleanup safety assertion passed.')
+          PY
+
+      - name: Commit V0.7.2 generator
+        run: |
+          if git diff --quiet -- DimensionGenerator.vb; then
+            echo 'DimensionGenerator.vb already patched.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add DimensionGenerator.vb
+          git commit -m 'Preserve centerlines and log cleanup boundary V0.7.2'
+          git push

@@ -223,10 +223,11 @@ Sub Main()
             CreateGlobalVerticalFlangeOverallV09( _
                 sheet, _
                 view, _
-                nodes)
+                nodes, _
+                chainRequests)
 
         Dim attachmentCount As Integer = 0
-        Logger.Info("V0.12: collision-aware left/right placement for the global vertical chain; true reference members preserved; attachments deferred.")
+        Logger.Info("V0.12.1: vertical chain and vertical overall share the same collision-selected side; true reference members preserved; attachments deferred.")
 
 
         drawDoc.Update2(True)
@@ -238,13 +239,13 @@ Sub Main()
             "Chain dimension sets / fallback dims: " & chainCount.ToString() & vbCrLf & _
             "Overall dimensions: " & overallCount.ToString() & vbCrLf & _
             "Attachment dimensions/sets: " & attachmentCount.ToString(), _
-            "DimensionGenerator V0.12")
+            "DimensionGenerator V0.12.1")
 
 
     Catch ex As Exception
 
         MessageBox.Show( _
-            "DimensionGenerator V0.12 failed:" & vbCrLf & vbCrLf & _
+            "DimensionGenerator V0.12.1 failed:" & vbCrLf & vbCrLf & _
             ex.Message, _
             "Auto Dimensions")
 
@@ -8646,7 +8647,8 @@ End Function
 Function CreateGlobalVerticalFlangeOverallV09( _
     sheet As Sheet, _
     view As DrawingView, _
-    nodes As List(Of NodeRecord)) As Integer
+    nodes As List(Of NodeRecord), _
+    requests As List(Of AutoChainRequestV01)) As Integer
 
     If sheet Is Nothing OrElse view Is Nothing OrElse nodes Is Nothing Then Return 0
 
@@ -8698,10 +8700,30 @@ Function CreateGlobalVerticalFlangeOverallV09( _
     If intentTop Is Nothing OrElse intentBottom Is Nothing Then Return 0
 
     Try
-        Dim rightX As Double = view.Left + view.Width
+        ' V0.12.1: the overall vertical dimension must follow the same side
+        ' selected by the collision-aware global vertical chain.  Do not make
+        ' an independent right-side decision here.
+        Dim placementX As Double = view.Left + view.Width + 2.55
+        Dim placementSide As String = "RIGHT_FALLBACK"
+
+        If requests IsNot Nothing Then
+            For Each request As AutoChainRequestV01 In requests
+                If request Is Nothing Then Continue For
+
+                If request.Name = "GLOBAL VERTICAL V011" AndAlso _
+                   request.OverallPlacementPoint IsNot Nothing Then
+
+                    placementX = request.OverallPlacementPoint.X
+                    placementSide = _
+                        If(placementX < view.Left, "LEFT", "RIGHT")
+                    Exit For
+                End If
+            Next
+        End If
+
         Dim placement As Point2d = _
             ThisApplication.TransientGeometry.CreatePoint2d( _
-                rightX + 2.55, _
+                placementX, _
                 (topPoint.Y + bottomPoint.Y) / 2.0)
 
         Dim dimObj As LinearGeneralDimension = _
@@ -8716,7 +8738,9 @@ Function CreateGlobalVerticalFlangeOverallV09( _
 
         Logger.Info( _
             "OVERALL_VERTICAL_FLANGE " & _
-            topNode.Code & " -> " & bottomNode.Code)
+            topNode.Code & " -> " & bottomNode.Code & _
+            " | side=" & placementSide & _
+            " | placementX_cm=" & Num(placementX))
 
         Return 1
     Catch ex As Exception

@@ -1,0 +1,45 @@
+name: Apply DimensionGenerator V0.7.1
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'tools/patch_dimension_generator_v071.py'
+      - '.github/workflows/apply-dimension-generator-v071.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Patch DimensionGenerator
+        run: python tools/patch_dimension_generator_v071.py
+
+      - name: Validate DimensionGenerator
+        run: python tools/validate_ilogic.py DimensionGenerator.vb
+
+      - name: Safety assertions
+        run: |
+          grep -q 'DIMENSION GENERATOR V0.7.1' DimensionGenerator.vb
+          grep -q 'CENTER_DATUM_CANDIDATE' DimensionGenerator.vb
+          grep -q 'CENTER_DATUM_SCAN result' DimensionGenerator.vb
+          grep -q 'xAtTargetY' DimensionGenerator.vb
+          grep -q 'yAtTargetX' DimensionGenerator.vb
+          echo 'V0.7.1 directional datum safety checks passed.'
+
+      - name: Commit V0.7.1 generator
+        run: |
+          if git diff --quiet -- DimensionGenerator.vb; then
+            echo 'DimensionGenerator.vb already patched.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add DimensionGenerator.vb
+          git commit -m 'Use infinite directional centerline datums V0.7.1'
+          git push

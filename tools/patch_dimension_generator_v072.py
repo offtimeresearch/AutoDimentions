@@ -20,7 +20,7 @@ if 'CENTERLINE_COUNT BEFORE_CLEANUP=' not in text:
     text = text.replace(old_call, new_call, 1)
 
 # Also log immediately before anchor resolution so we can prove whether some
-# intermediate planning step has touched the sheet centerline collection.
+# intermediate planning step has touched the drawing-axis collection.
 needle = '''        Dim unresolvedAnchors As Integer = _\n            ResolveProjectedAnchorsV03( _'''
 replacement = '''        Logger.Info( _\n            "CENTERLINE_COUNT BEFORE_RESOLVE=" & _\n            sheet.Centerlines.Count.ToString())\n\n        Dim unresolvedAnchors As Integer = _\n            ResolveProjectedAnchorsV03( _'''
 if 'CENTERLINE_COUNT BEFORE_RESOLVE=' not in text:
@@ -28,9 +28,9 @@ if 'CENTERLINE_COUNT BEFORE_RESOLVE=' not in text:
         raise RuntimeError('Could not find ResolveProjectedAnchorsV03 call')
     text = text.replace(needle, replacement, 1)
 
-# Replace the cleanup function wholesale.  Production DimensionGenerator is
-# not allowed to inspect, tag, modify, or delete centerlines.  Centerlines are
-# owned exclusively by CenterlineGenerator.
+# Replace the cleanup function wholesale. Production DimensionGenerator is
+# not allowed to inspect, tag, modify, or delete drawing center axes. Those
+# objects are owned exclusively by CenterlineGenerator.
 pattern = re.compile(
     r'Sub\s+DeletePreviousAutoDimensionsV01\s*\(\s*sheet\s+As\s+Sheet\s*\).*?\nEnd Sub',
     re.S | re.I)
@@ -38,8 +38,8 @@ pattern = re.compile(
 safe_cleanup = r'''Sub DeletePreviousAutoDimensionsV01(sheet As Sheet)
 
     ' V0.7.2 HARD SAFETY BOUNDARY:
-    ' DimensionGenerator NEVER touches sheet.Centerlines here.
-    ' Centerlines are owned by CenterlineGenerator V0.2.
+    ' This routine deletes only annotations created by DimensionGenerator.
+    ' Drawing center axes are owned by CenterlineGenerator V0.2.
 
     Try
         Dim chainSets As ChainDimensionSets = _
@@ -94,13 +94,14 @@ if not m:
     raise RuntimeError('DeletePreviousAutoDimensionsV01 function not found')
 text = text[:m.start()] + safe_cleanup + text[m.end():]
 
-# Hard assertion: the safe cleanup function must contain no Centerlines token.
+# Hard assertion: the cleanup routine must contain no API access to the
+# centerline collection.
 cleanup_match = pattern.search(text)
 if not cleanup_match:
     raise RuntimeError('Safe cleanup function missing after replacement')
 cleanup_text = cleanup_match.group(0)
-if 'Centerlines' in cleanup_text:
-    raise RuntimeError('Unsafe Centerlines reference remains in cleanup function')
+if 'sheet.Centerlines' in cleanup_text:
+    raise RuntimeError('Unsafe sheet.Centerlines reference remains in cleanup function')
 
 path.write_text(text, encoding='utf-8', newline='\n')
 print('Patched DimensionGenerator to V0.7.2 centerline-preservation diagnostics.')

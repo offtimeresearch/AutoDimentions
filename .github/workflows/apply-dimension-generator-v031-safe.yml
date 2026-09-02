@@ -1,0 +1,33 @@
+name: Apply DimensionGenerator V0.3.1 Safe
+
+on:
+  push:
+    paths:
+      - 'tools/apply_dimension_generator_v031_safe.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Patch DimensionGenerator safe mode
+        run: python3 tools/apply_dimension_generator_v031_safe.py
+      - name: Validate iLogic source
+        run: python3 tools/validate_ilogic.py DimensionGenerator.vb
+      - name: Commit safe projected-curve generator
+        run: |
+          if git diff --quiet -- DimensionGenerator.vb; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add DimensionGenerator.vb
+          git commit -m "Safe projected-curve-only dimension test V0.3.1"
+          git push origin HEAD:main

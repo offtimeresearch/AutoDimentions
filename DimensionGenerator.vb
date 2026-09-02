@@ -194,7 +194,7 @@ Sub Main()
                 chainRequests)
 
         Dim attachmentCount As Integer = 0
-        Logger.Info("V0.6.3 staged mode: attachment dimensions remain deferred while existing centerline fitting-center intents are verified.")
+        Logger.Info("V0.6.3.1 stable mode: projected-curve chains enabled; fitting-center and attachment dimensions deferred.")
 
 
         drawDoc.Update2(True)
@@ -206,13 +206,13 @@ Sub Main()
             "Chain dimension sets / fallback dims: " & chainCount.ToString() & vbCrLf & _
             "Overall dimensions: " & overallCount.ToString() & vbCrLf & _
             "Attachment dimensions/sets: " & attachmentCount.ToString(), _
-            "DimensionGenerator V0.6.3")
+            "DimensionGenerator V0.6.3.1")
 
 
     Catch ex As Exception
 
         MessageBox.Show( _
-            "DimensionGenerator V0.6.3 failed:" & vbCrLf & vbCrLf & _
+            "DimensionGenerator V0.6.3.1 failed:" & vbCrLf & vbCrLf & _
             ex.Message, _
             "Auto Dimensions")
 
@@ -4700,7 +4700,7 @@ End Function
 
 
 ' ===================================================================
-' DIMENSION GENERATOR V0.6.3 - SHEET CENTERLINES + CHAINS
+' DIMENSION GENERATOR V0.6.3.1 - STABLE PROJECTED CURVES + CHAINS
 ' ===================================================================
 
 Function GetTargetDrawingViewV01( _
@@ -5270,130 +5270,29 @@ Function ResolveFittingCenterIntentV04( _
     node As NodeRecord, _
     target As Point2d) As GeometryIntent
 
-    ' ===============================================================
-    ' V0.6.2 - REUSE EXISTING CENTERLINES ONLY
+    ' V0.6.3.1 PRODUCTION SAFETY
+    ' Do NOT consume centerlines in the production dimension rule yet.
     '
-    ' CenterlineGenerator creates the PIPE / FLANGE native bisectors in a
-    ' separate, already-tested rule.  DimensionGenerator NEVER calls
-    ' Centerlines.AddBisector here.
+    ' Proven stable:
+    '   - real projected DrawingCurve intents
+    '   - native ChainDimensionSet
+    '   - separate CenterlineGenerator creating PIPE / FLANGE centerlines
     '
-    ' For a TEE / ELBOW semantic center:
-    '   1. Read only centerlines tagged AutoSpoolCenterline.
-    '   2. Find two non-parallel axes whose mathematical intersection is
-    '      at the topology-projected semantic center.
-    '   3. Ask Inventor for a GeometryIntent at the intersection of those
-    '      two EXISTING centerlines.
-    ' ===============================================================
+    ' Not yet proven safe:
+    '   - centerline GeometryIntent inside a dimension
+    '   - centerline/centerline intersection GeometryIntent
+    '
+    ' These are isolated in CenterlineDimensionProbe.vb before being
+    ' reintroduced here.
 
-    If node Is Nothing OrElse target Is Nothing Then Return Nothing
-
-    Dim generated As List(Of Centerline) = _
-        GetGeneratedCenterlinesV062(sheet)
-
-    If generated.Count < 2 Then
+    If node IsNot Nothing Then
         Logger.Info( _
-            "CENTER_INTENT SKIP " & node.Code & "/" & node.ComponentType & _
-            " | generated centerlines=" & generated.Count.ToString())
-        Return Nothing
+            "CENTER_INTENT DEFER " & _
+            node.Code & "/" & node.ComponentType & _
+            " | production rule will not consume centerlines")
     End If
 
-    Dim bestA As Centerline = Nothing
-    Dim bestB As Centerline = Nothing
-    Dim bestError As Double = Double.MaxValue
-    Dim bestIX As Double = 0
-    Dim bestIY As Double = 0
-
-    For i As Integer = 0 To generated.Count - 2
-        For j As Integer = i + 1 To generated.Count - 1
-
-            Dim a As Centerline = generated.Item(i)
-            Dim b As Centerline = generated.Item(j)
-
-            If a Is Nothing OrElse b Is Nothing Then Continue For
-
-            Dim ix As Double = 0
-            Dim iy As Double = 0
-
-            If Not TryCenterlineIntersectionV062(a, b, ix, iy) Then
-                Continue For
-            End If
-
-            Dim dx As Double = ix - target.X
-            Dim dy As Double = iy - target.Y
-            Dim errorDistance As Double = Math.Sqrt(dx * dx + dy * dy)
-
-            ' Sheet database units are cm.  0.20 cm = 2 mm on the sheet.
-            ' The semantic point came from ModelToSheetSpace, so a valid pair
-            ' should normally be much closer than this.
-            If errorDistance > 0.20 Then Continue For
-
-            If errorDistance < bestError Then
-                bestError = errorDistance
-                bestA = a
-                bestB = b
-                bestIX = ix
-                bestIY = iy
-            End If
-
-        Next
-    Next
-
-    If bestA Is Nothing OrElse bestB Is Nothing Then
-        Logger.Info( _
-            "CENTER_INTENT SKIP " & node.Code & "/" & node.ComponentType & _
-            " | no existing centerline intersection near semantic point")
-        Return Nothing
-    End If
-
-    Logger.Info( _
-        "CENTER_INTENT PAIR " & node.Code & "/" & node.ComponentType & _
-        " | A=" & GetCenterlineOccurrenceTagV062(bestA) & _
-        " | B=" & GetCenterlineOccurrenceTagV062(bestB) & _
-        " | intersection=" & Num(bestIX) & "," & Num(bestIY) & _
-        " | target=" & Num(target.X) & "," & Num(target.Y) & _
-        " | error=" & Num(bestError))
-
-    Try
-        ' No centerline is created or edited here.  The optional Intent
-        ' argument is another geometry, which Autodesk documents as the way
-        ' to create an intersection GeometryIntent.
-        Dim centreIntent As GeometryIntent = _
-            sheet.CreateGeometryIntent(bestA, bestB)
-
-        If centreIntent Is Nothing Then Return Nothing
-
-        ' Validate the returned point when Inventor exposes one.
-        Try
-            Dim resolved As Point2d = centreIntent.PointOnSheet
-            If resolved IsNot Nothing Then
-                Dim rdx As Double = resolved.X - target.X
-                Dim rdy As Double = resolved.Y - target.Y
-                Dim resolvedError As Double = Math.Sqrt(rdx * rdx + rdy * rdy)
-
-                If resolvedError > 0.25 Then
-                    Logger.Error( _
-                        "CENTER_INTENT rejected " & node.Code & _
-                        " | Inventor point error=" & Num(resolvedError))
-                    Return Nothing
-                End If
-            End If
-        Catch
-        End Try
-
-        Logger.Info( _
-            "CENTER_INTENT resolved " & _
-            node.Code & "/" & node.ComponentType & _
-            " from existing generated centerlines")
-
-        Return centreIntent
-
-    Catch ex As Exception
-        Logger.Error( _
-            "Existing centerline intersection intent failed for " & _
-            node.Code & "/" & node.ComponentType & _
-            " : " & ex.Message)
-        Return Nothing
-    End Try
+    Return Nothing
 End Function
 
 

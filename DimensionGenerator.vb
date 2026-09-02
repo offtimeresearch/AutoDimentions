@@ -206,13 +206,13 @@ Sub Main()
             "Chain dimension sets / fallback dims: " & chainCount.ToString() & vbCrLf & _
             "Overall dimensions: " & overallCount.ToString() & vbCrLf & _
             "Attachment dimensions/sets: " & attachmentCount.ToString(), _
-            "DimensionGenerator V0.6")
+            "DimensionGenerator V0.6.1")
 
 
     Catch ex As Exception
 
         MessageBox.Show( _
-            "DimensionGenerator V0.6 failed:" & vbCrLf & vbCrLf & _
+            "DimensionGenerator V0.6.1 failed:" & vbCrLf & vbCrLf & _
             ex.Message, _
             "Auto Dimensions")
 
@@ -5270,140 +5270,20 @@ Function ResolveFittingCenterIntentV04( _
     node As NodeRecord, _
     target As Point2d) As GeometryIntent
 
-    ' ===============================================================
-    ' V0.6 SAFE CENTER-AXIS ARCHITECTURE
+    ' V0.6.1 PRODUCTION SAFETY
+    ' DimensionGenerator NEVER calls AddBisector.
+    ' Centerlines are generated separately by CenterlineGenerator.vb and will
+    ' be consumed only after that spool-wide centerline pass is verified.
     '
-    ' Proven by CenterlineProbe:
-    '   * AddBisector is stable when both projected straight lines are
-    '     a known-good parallel silhouette pair from ONE occurrence.
-    '
-    ' Therefore:
-    '   TEE   -> derive run + branch axes from the TEE straight lines.
-    '   ELBOW -> NEVER bisect elbow geometry.  For each elbow port,
-    '            use the connected straight PIPE / TEE / FLANGE axis.
-    '            Extend those native centerlines through the theoretical
-    '            elbow centre and use their intersection.
-    ' ===============================================================
+    ' For now centre-dependent dimensions are deferred, while projected-curve
+    ' dimensions and native ChainDimensionSet remain enabled and stable.
 
-    If node Is Nothing OrElse target Is Nothing Then Return Nothing
-
-    Dim axes As New List(Of Centerline)
-
-    If node.ComponentType = "TEE" Then
-
-        Dim directions As List(Of AxisDirectionV06) = _
-            GetNodePortDirectionsV06(view, node)
-
-        For Each direction As AxisDirectionV06 In directions
-            Dim cl As Centerline = _
-                GetOrCreateOccurrenceAxisV06( _
-                    sheet, _
-                    view, _
-                    node.Occurrence, _
-                    direction.UX, _
-                    direction.UY, _
-                    target, _
-                    node.Code & "_TEE")
-
-            AddCenterlineIfUniqueV06(axes, cl)
-            If axes.Count >= 2 Then Exit For
-        Next
-
-    ElseIf node.ComponentType = "ELBOW" Then
-
-        For Each elbowPort As PortRecord In node.Ports
-
-            If Not elbowPort.Used Then Continue For
-
-            Dim direction As AxisDirectionV06 = _
-                ProjectPortAxisV06( _
-                    view, _
-                    node, _
-                    elbowPort)
-
-            If direction Is Nothing Then Continue For
-
-            Dim straightNode As NodeRecord = _
-                FindStraightNeighbourForPortV06( _
-                    node, _
-                    elbowPort)
-
-            If straightNode Is Nothing OrElse _
-               straightNode.Occurrence Is Nothing Then
-
-                Logger.Error( _
-                    "No straight axis source found for elbow " & _
-                    node.Code & _
-                    " port face " & _
-                    elbowPort.FaceIndex.ToString())
-                Continue For
-            End If
-
-            Dim cl As Centerline = _
-                GetOrCreateOccurrenceAxisV06( _
-                    sheet, _
-                    view, _
-                    straightNode.Occurrence, _
-                    direction.UX, _
-                    direction.UY, _
-                    target, _
-                    node.Code & "_FROM_" & straightNode.Code)
-
-            AddCenterlineIfUniqueV06(axes, cl)
-            If axes.Count >= 2 Then Exit For
-        Next
-
-    Else
-        Return Nothing
+    If node IsNot Nothing Then
+        Logger.Info( _
+            "Center-dependent anchor deferred for " & _
+            node.Code & "/" & node.ComponentType & _
+            " (centerlines generated externally)")
     End If
-
-    If axes.Count < 2 Then
-        Logger.Error( _
-            "Only " & axes.Count.ToString() & _
-            " safe center axis/axes resolved for " & _
-            node.Code & "/" & node.ComponentType)
-        Return Nothing
-    End If
-
-    For i As Integer = 0 To axes.Count - 2
-        For j As Integer = i + 1 To axes.Count - 1
-
-            If CenterlinesParallelV03( _
-                axes.Item(i), _
-                axes.Item(j)) Then
-                Continue For
-            End If
-
-            ExtendCenterlineThroughPointV06( _
-                axes.Item(i), _
-                target, _
-                0.40)
-
-            ExtendCenterlineThroughPointV06( _
-                axes.Item(j), _
-                target, _
-                0.40)
-
-            Try
-                Dim pointIntent As GeometryIntent = _
-                    sheet.CreateGeometryIntent( _
-                        axes.Item(i), _
-                        axes.Item(j))
-
-                If pointIntent IsNot Nothing Then
-                    Logger.Info( _
-                        "Resolved fitting center from safe straight axes: " & _
-                        node.Code & "/" & node.ComponentType)
-                    Return pointIntent
-                End If
-
-            Catch ex As Exception
-                Logger.Error( _
-                    "Centerline intersection intent failed for " & _
-                    node.Code & ": " & ex.Message)
-            End Try
-        Next
-    Next
 
     Return Nothing
 End Function

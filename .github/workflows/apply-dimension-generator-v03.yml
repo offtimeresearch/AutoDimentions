@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'tools/apply_dimension_generator_v03.py'
+      - '.github/workflows/apply-dimension-generator-v03.yml'
   workflow_dispatch:
 
 permissions:

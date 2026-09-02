@@ -5218,11 +5218,11 @@ Sub GenerateAttachmentVerificationSvgV09( _
     Next
 
     For Each d As DimensionRecord In componentDimensions
-        If d.ConnectionType = "PIPE_LENGTH" Then
+        If d.DimensionType = "PIPE_LENGTH" Then
             Dim s1 As Double = AttachmentStationCoordinateV09(attachments.Item(0), d.X1, d.Y1, d.Z1)
             Dim s2 As Double = AttachmentStationCoordinateV09(attachments.Item(0), d.X2, d.Y2, d.Z2)
             DrawHorizontalDimensionV09(svg, leftX + Math.Min(s1, s2) * sx, leftX + Math.Max(s1, s2) * sx, mainY + 72.0, d.Value)
-        ElseIf d.ConnectionType = "FLANGE_THICKNESS" Then
+        ElseIf d.DimensionType = "FLANGE_THICKNESS" Then
             Dim fs1 As Double = AttachmentStationCoordinateV09(attachments.Item(0), d.X1, d.Y1, d.Z1)
             Dim fs2 As Double = AttachmentStationCoordinateV09(attachments.Item(0), d.X2, d.Y2, d.Z2)
             DrawHorizontalDimensionV09(svg, leftX + Math.Min(fs1, fs2) * sx, leftX + Math.Max(fs1, fs2) * sx, mainY + 42.0, d.Value)

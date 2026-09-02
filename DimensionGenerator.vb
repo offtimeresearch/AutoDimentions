@@ -207,13 +207,13 @@ Sub Main()
             "Chain sets: " & chainCount.ToString() & vbCrLf & _
             "Overall dimensions: " & overallCount.ToString() & vbCrLf & _
             "Attachment dimensions/sets: " & attachmentCount.ToString(), _
-            "DimensionGenerator V0.1")
+            "DimensionGenerator V0.2")
 
 
     Catch ex As Exception
 
         MessageBox.Show( _
-            "DimensionGenerator V0.1 failed:" & vbCrLf & vbCrLf & _
+            "DimensionGenerator V0.2 failed:" & vbCrLf & vbCrLf & _
             ex.Message, _
             "Auto Dimensions")
 
@@ -4699,7 +4699,7 @@ End Function
 
 
 ' ===================================================================
-' DIMENSION GENERATOR V0.1 - DRAWING API LAYER
+' DIMENSION GENERATOR V0.2 - DRAWING API LAYER
 ' ===================================================================
 
 Function GetTargetDrawingViewV01( _
@@ -5060,17 +5060,51 @@ Function CreateAnchorSketchV01( _
 
     sketch.Edit()
 
+    ' V0.2: Sheet.CreateGeometryIntent accepts sheet-sketch entities.
+    ' A standalone SketchPoint was producing E_FAIL in Inventor.
+    ' Create a tiny 45-degree sketch line centred exactly on every
+    ' semantic anchor and later request its midpoint intent.
+    Dim halfLength As Double = 0.025
+
     For Each anchor As AutoDimAnchorV01 In allAnchors
+
+        Dim p1 As Point2d = _
+            ThisApplication.TransientGeometry.CreatePoint2d( _
+                anchor.SheetPoint.X - halfLength, _
+                anchor.SheetPoint.Y - halfLength)
+
+        Dim p2 As Point2d = _
+            ThisApplication.TransientGeometry.CreatePoint2d( _
+                anchor.SheetPoint.X + halfLength, _
+                anchor.SheetPoint.Y + halfLength)
+
         anchor.Entity = _
-            sketch.SketchPoints.Add( _
-                ThisApplication.TransientGeometry.CreatePoint2d( _
-                    anchor.SheetPoint.X, _
-                    anchor.SheetPoint.Y), _
-                False)
+            sketch.SketchLines.AddByTwoPoints(p1, p2)
+
+        Try
+            anchor.Entity.Construction = True
+        Catch
+        End Try
+
     Next
 
     sketch.ExitEdit()
     Return sketch
+End Function
+
+
+Function CreateAnchorIntentV02( _
+    sheet As Sheet, _
+    anchor As AutoDimAnchorV01) As GeometryIntent
+
+    If anchor Is Nothing OrElse anchor.Entity Is Nothing Then
+        Return Nothing
+    End If
+
+    Return _
+        sheet.CreateGeometryIntent( _
+            anchor.Entity, _
+            PointIntentEnum.kMidPointIntent)
 End Function
 
 
@@ -5090,7 +5124,7 @@ Function CreateChainDimensionsV01( _
 
             For Each anchor As AutoDimAnchorV01 In request.Anchors
                 intents.Add( _
-                    sheet.CreateGeometryIntent(anchor.Entity))
+                    CreateAnchorIntentV02(sheet, anchor))
             Next
 
             Dim dimSet As ChainDimensionSet = _
@@ -5109,8 +5143,93 @@ Function CreateChainDimensionsV01( _
 
         Catch ex As Exception
             Logger.Error( _
-                "Chain dimension failed for " & _
+                "Chain dimension set failed for " & _
                 request.Name & _
+                ": " & _
+                ex.Message & _
+                " | attempting individual fallback")
+
+            created += _
+                CreateIndividualChainFallbackV02( _
+                    sheet, _
+                    request)
+        End Try
+
+    Next
+
+    Return created
+End Function
+
+
+Function CreateIndividualChainFallbackV02( _
+    sheet As Sheet, _
+    request As AutoChainRequestV01) As Integer
+
+    Dim created As Integer = 0
+
+    If request Is Nothing OrElse request.Anchors.Count < 2 Then
+        Return created
+    End If
+
+    For i As Integer = 0 To request.Anchors.Count - 2
+
+        Try
+            Dim a As AutoDimAnchorV01 = request.Anchors.Item(i)
+            Dim b As AutoDimAnchorV01 = request.Anchors.Item(i + 1)
+
+            Dim intent1 As GeometryIntent = _
+                CreateAnchorIntentV02(sheet, a)
+            Dim intent2 As GeometryIntent = _
+                CreateAnchorIntentV02(sheet, b)
+
+            If intent1 Is Nothing OrElse intent2 Is Nothing Then
+                Continue For
+            End If
+
+            Dim textPoint As Point2d = _
+                request.PlacementPoint.Copy()
+
+            If request.DimensionType = _
+               DimensionTypeEnum.kHorizontalDimensionType Then
+
+                textPoint.X = _
+                    (a.SheetPoint.X + b.SheetPoint.X) / 2.0
+
+            ElseIf request.DimensionType = _
+                   DimensionTypeEnum.kVerticalDimensionType Then
+
+                textPoint.Y = _
+                    (a.SheetPoint.Y + b.SheetPoint.Y) / 2.0
+
+            Else
+
+                textPoint.X = _
+                    (a.SheetPoint.X + b.SheetPoint.X) / 2.0
+                textPoint.Y = _
+                    (a.SheetPoint.Y + b.SheetPoint.Y) / 2.0
+            End If
+
+            Dim dimObj As LinearGeneralDimension = _
+                sheet.DrawingDimensions.GeneralDimensions.AddLinear( _
+                    textPoint, _
+                    intent1, _
+                    intent2, _
+                    request.DimensionType)
+
+            Try
+                dimObj.Precision = 0
+            Catch
+            End Try
+
+            TagAutoObjectV01(dimObj)
+            created += 1
+
+        Catch ex As Exception
+            Logger.Error( _
+                "Individual chain fallback failed for " & _
+                request.Name & _
+                " member " & _
+                (i + 1).ToString() & _
                 ": " & _
                 ex.Message)
         End Try
@@ -5139,9 +5258,9 @@ Function CreateOverallDimensionsV01( _
                 request.Anchors.Item(request.Anchors.Count - 1)
 
             Dim intent1 As GeometryIntent = _
-                sheet.CreateGeometryIntent(firstAnchor.Entity)
+                CreateAnchorIntentV02(sheet, firstAnchor)
             Dim intent2 As GeometryIntent = _
-                sheet.CreateGeometryIntent(lastAnchor.Entity)
+                CreateAnchorIntentV02(sheet, lastAnchor)
 
             Dim dimObj As LinearGeneralDimension = _
                 sheet.DrawingDimensions.GeneralDimensions.AddLinear( _
@@ -5341,11 +5460,11 @@ Function CreateAttachmentDimensionsV01( _
                 ThisApplication.TransientObjects.CreateObjectCollection()
 
             intents.Add( _
-                sheet.CreateGeometryIntent(plan.Datum.Entity))
+                CreateAnchorIntentV02(sheet, plan.Datum))
 
             For Each anchor As AutoDimAnchorV01 In plan.StationAnchors
                 intents.Add( _
-                    sheet.CreateGeometryIntent(anchor.Entity))
+                    CreateAnchorIntentV02(sheet, anchor))
             Next
 
             Dim baselineSet As BaselineDimensionSet = _
@@ -5374,9 +5493,9 @@ Function CreateAttachmentDimensionsV01( _
 
         Try
             Dim intent1 As GeometryIntent = _
-                sheet.CreateGeometryIntent(request.A.Entity)
+                CreateAnchorIntentV02(sheet, request.A)
             Dim intent2 As GeometryIntent = _
-                sheet.CreateGeometryIntent(request.B.Entity)
+                CreateAnchorIntentV02(sheet, request.B)
 
             Dim dimObj As LinearGeneralDimension = _
                 sheet.DrawingDimensions.GeneralDimensions.AddLinear( _
@@ -5417,7 +5536,7 @@ Class AutoDimAnchorV01
     Public Y As Double
     Public Z As Double
     Public SheetPoint As Point2d = Nothing
-    Public Entity As SketchPoint = Nothing
+    Public Entity As SketchLine = Nothing
 End Class
 
 

@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   push:
     paths:
+      - 'TopologyExtractor.vb'
       - 'tools/normalize_ilogic.py'
       - '.github/workflows/normalize-ilogic.yml'
       - '.normalize_ilogic_trigger'
@@ -21,13 +22,13 @@ jobs:
           fetch-depth: 0
 
       - name: Normalize source for Inventor iLogic
-        run: python3 tools/normalize_ilogic.py "Topology Extractor.iLogicVb"
+        run: python3 tools/normalize_ilogic.py "TopologyExtractor.vb"
 
       - name: Verify BOM is gone
         shell: python
         run: |
           from pathlib import Path
-          p = Path('Topology Extractor.iLogicVb')
+          p = Path('TopologyExtractor.vb')
           raw = p.read_bytes()
           assert not raw.startswith(b'\xef\xbb\xbf'), 'UTF-8 BOM is still present'
           assert raw.startswith(b'AddReference "System.Windows.Forms.dll"'), 'Invalid iLogic header start'
@@ -45,5 +46,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "Normalize Topology Extractor for Inventor iLogic"
+          git commit -m "Normalize TopologyExtractor.vb for Inventor iLogic"
           git push origin HEAD:main

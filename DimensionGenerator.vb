@@ -219,8 +219,14 @@ Sub Main()
                 sheet, _
                 chainRequests)
 
+        overallCount += _
+            CreateGlobalVerticalFlangeOverallV09( _
+                sheet, _
+                view, _
+                nodes)
+
         Dim attachmentCount As Integer = 0
-        Logger.Info("V0.8: safe PIPE/FLANGE centerlines are ensured inside DimensionGenerator before directional fitting-center dimensions; attachments deferred.")
+        Logger.Info("V0.9: native physical chain sets + reference fitting dimensions + cleaned dimension tiers; attachments deferred.")
 
 
         drawDoc.Update2(True)
@@ -232,13 +238,13 @@ Sub Main()
             "Chain dimension sets / fallback dims: " & chainCount.ToString() & vbCrLf & _
             "Overall dimensions: " & overallCount.ToString() & vbCrLf & _
             "Attachment dimensions/sets: " & attachmentCount.ToString(), _
-            "DimensionGenerator V0.8")
+            "DimensionGenerator V0.9")
 
 
     Catch ex As Exception
 
         MessageBox.Show( _
-            "DimensionGenerator V0.8 failed:" & vbCrLf & vbCrLf & _
+            "DimensionGenerator V0.9 failed:" & vbCrLf & vbCrLf & _
             ex.Message, _
             "Auto Dimensions")
 
@@ -4841,24 +4847,16 @@ Function BuildChainRequestsV01( _
     allAnchors As List(Of AutoDimAnchorV01)) As List(Of AutoChainRequestV01)
 
     Dim result As New List(Of AutoChainRequestV01)
-
-    Dim horizontalLevel As Integer = 0
-    Dim verticalLevel As Integer = 0
     Dim alignedLevel As Integer = 0
 
     For Each chain As StraightChain In chains
 
         Dim dimensionsOnChain As New List(Of DimensionRecord)
-
         For Each d As DimensionRecord In componentDimensions
-            If d.ChainIndex = chain.Index Then
-                dimensionsOnChain.Add(d)
-            End If
+            If d.ChainIndex = chain.Index Then dimensionsOnChain.Add(d)
         Next
 
-        If dimensionsOnChain.Count = 0 Then
-            Continue For
-        End If
+        If dimensionsOnChain.Count = 0 Then Continue For
 
         Dim request As New AutoChainRequestV01
         request.Chain = chain
@@ -4868,21 +4866,20 @@ Function BuildChainRequestsV01( _
             AddAnchorToChainRequestV01( _
                 request, _
                 GetOrAddAnchorV01( _
-                    allAnchors, view, _
-                    d.X1, d.Y1, d.Z1))
+                    allAnchors, view, d.X1, d.Y1, d.Z1))
 
             AddAnchorToChainRequestV01( _
                 request, _
                 GetOrAddAnchorV01( _
-                    allAnchors, view, _
-                    d.X2, d.Y2, d.Z2))
+                    allAnchors, view, d.X2, d.Y2, d.Z2))
+
+            If IsReferenceDimensionTypeV09(d.DimensionType) Then
+                AddReferenceSegmentV09(request, d)
+            End If
         Next
 
         SortChainAnchorsV01(request)
-
-        If request.Anchors.Count < 2 Then
-            Continue For
-        End If
+        If request.Anchors.Count < 2 Then Continue For
 
         Dim firstAnchor As AutoDimAnchorV01 = request.Anchors.Item(0)
         Dim lastAnchor As AutoDimAnchorV01 = _
@@ -4896,38 +4893,31 @@ Function BuildChainRequestsV01( _
         Dim rightX As Double = view.Left + view.Width
         Dim bottomY As Double = view.Top - view.Height
 
-        If request.DimensionType = _
-           DimensionTypeEnum.kHorizontalDimensionType Then
-
-            horizontalLevel += 1
-
+        If request.DimensionType = DimensionTypeEnum.kHorizontalDimensionType Then
+            ' Primary chain close to the view; overall one clean tier below.
             request.PlacementPoint = _
                 ThisApplication.TransientGeometry.CreatePoint2d( _
                     (firstAnchor.SheetPoint.X + lastAnchor.SheetPoint.X) / 2.0, _
-                    bottomY - 0.8 - (horizontalLevel - 1) * 0.65)
+                    bottomY - 0.65)
 
             request.OverallPlacementPoint = _
                 ThisApplication.TransientGeometry.CreatePoint2d( _
                     request.PlacementPoint.X, _
-                    request.PlacementPoint.Y - 0.75)
+                    bottomY - 1.35)
 
-        ElseIf request.DimensionType = _
-               DimensionTypeEnum.kVerticalDimensionType Then
-
-            verticalLevel += 1
-
+        ElseIf request.DimensionType = DimensionTypeEnum.kVerticalDimensionType Then
+            ' All partial vertical dimensions share one inner tier.
             request.PlacementPoint = _
                 ThisApplication.TransientGeometry.CreatePoint2d( _
-                    rightX + 0.8 + (verticalLevel - 1) * 0.65, _
+                    rightX + 0.65, _
                     (firstAnchor.SheetPoint.Y + lastAnchor.SheetPoint.Y) / 2.0)
 
             request.OverallPlacementPoint = _
                 ThisApplication.TransientGeometry.CreatePoint2d( _
-                    request.PlacementPoint.X + 0.75, _
+                    rightX + 1.40, _
                     request.PlacementPoint.Y)
 
         Else
-
             alignedLevel += 1
 
             Dim midX As Double = _
@@ -4935,19 +4925,14 @@ Function BuildChainRequestsV01( _
             Dim midY As Double = _
                 (firstAnchor.SheetPoint.Y + lastAnchor.SheetPoint.Y) / 2.0
 
-            Dim dx As Double = _
-                lastAnchor.SheetPoint.X - firstAnchor.SheetPoint.X
-            Dim dy As Double = _
-                lastAnchor.SheetPoint.Y - firstAnchor.SheetPoint.Y
+            Dim dx As Double = lastAnchor.SheetPoint.X - firstAnchor.SheetPoint.X
+            Dim dy As Double = lastAnchor.SheetPoint.Y - firstAnchor.SheetPoint.Y
             Dim length2d As Double = Math.Sqrt(dx * dx + dy * dy)
-
-            If length2d < 0.001 Then
-                Continue For
-            End If
+            If length2d < 0.001 Then Continue For
 
             Dim nx As Double = -dy / length2d
             Dim ny As Double = dx / length2d
-            Dim offset As Double = 0.9 + (alignedLevel - 1) * 0.65
+            Dim offset As Double = 0.85 + (alignedLevel - 1) * 0.60
 
             request.PlacementPoint = _
                 ThisApplication.TransientGeometry.CreatePoint2d( _
@@ -4956,13 +4941,11 @@ Function BuildChainRequestsV01( _
 
             request.OverallPlacementPoint = _
                 ThisApplication.TransientGeometry.CreatePoint2d( _
-                    midX + nx * (offset + 0.75), _
-                    midY + ny * (offset + 0.75))
-
+                    midX + nx * (offset + 0.70), _
+                    midY + ny * (offset + 0.70))
         End If
 
         result.Add(request)
-
     Next
 
     Return result
@@ -7674,77 +7657,38 @@ Function CreateChainDimensionsV01( _
     Dim created As Integer = 0
 
     For Each request As AutoChainRequestV01 In requests
+        If request Is Nothing OrElse request.Anchors.Count < 2 Then Continue For
 
-        If request.Anchors.Count < 2 Then Continue For
+        Dim i As Integer = 0
+        While i < request.Anchors.Count - 1
 
-        Dim usesDirectionalCenter As Boolean = False
+            Dim a As AutoDimAnchorV01 = request.Anchors.Item(i)
+            Dim b As AutoDimAnchorV01 = request.Anchors.Item(i + 1)
 
-        Try
-            Dim intents As ObjectCollection = _
-                ThisApplication.TransientObjects.CreateObjectCollection()
+            ' Keep centerline intents OUT of native chain sets.  Build a real
+            ' chain from each contiguous block of actual projected geometry.
+            If a.Intent IsNot Nothing AndAlso b.Intent IsNot Nothing Then
 
-            For Each anchor As AutoDimAnchorV01 In request.Anchors
+                Dim startIndex As Integer = i
+                Dim endIndex As Integer = i + 1
 
-                If anchor.IsFittingCenter Then
-                    usesDirectionalCenter = True
-                End If
-
-                Dim resolvedIntent As GeometryIntent = _
-                    ResolveAnchorIntentForDimensionV07( _
-                        sheet, anchor, request.DimensionType)
-
-                If resolvedIntent IsNot Nothing Then
-                    intents.Add(resolvedIntent)
-                End If
-            Next
-
-            If intents.Count < 2 Then Continue For
-
-            ' ChainDimensionSet + centerline GeometryIntent is not yet proven
-            ' in this Inventor build.  Keep native chain sets for pure projected
-            ' geometry, and use the already-proven AddLinear path when a fitting
-            ' center is involved. CenterlineChainProbe validates the final step.
-            If usesDirectionalCenter Then
-                Logger.Info( _
-                    "CENTER_CHAIN SAFE_FALLBACK " & request.Name & _
-                    " | using individual linear dimensions until chain probe passes")
+                While endIndex < request.Anchors.Count - 1 AndAlso _
+                      request.Anchors.Item(endIndex + 1).Intent IsNot Nothing
+                    endIndex += 1
+                End While
 
                 created += _
-                    CreateIndividualChainFallbackV02( _
-                        sheet, _
-                        request)
+                    CreatePhysicalChainGroupV09( _
+                        sheet, request, startIndex, endIndex)
 
-                Continue For
+                i = endIndex
+            Else
+                created += _
+                    CreateIntervalDimensionV09( _
+                        sheet, request, i, i + 1)
+                i += 1
             End If
-
-            Dim dimSet As ChainDimensionSet = _
-                sheet.DrawingDimensions.ChainDimensionSets.Add( _
-                    intents, _
-                    request.PlacementPoint, _
-                    request.DimensionType)
-
-            Try
-                dimSet.Precision = 0
-            Catch
-            End Try
-
-            TagAutoObjectV01(dimSet)
-            created += 1
-
-        Catch ex As Exception
-            Logger.Error( _
-                "Chain dimension set failed for " & _
-                request.Name & _
-                ": " & _
-                ex.Message & _
-                " | using individual fallback")
-
-            created += _
-                CreateIndividualChainFallbackV02( _
-                    sheet, _
-                    request)
-        End Try
-
+        End While
     Next
 
     Return created
@@ -7840,8 +7784,14 @@ Function CreateOverallDimensionsV01( _
     Dim created As Integer = 0
 
     For Each request As AutoChainRequestV01 In requests
-
         If request.Anchors.Count <= 2 Then Continue For
+
+        ' Do not show fitting-centre vertical subtotals such as 193 / 320.
+        ' V0.9 adds one clean flange-to-flange vertical envelope overall instead.
+        If request.DimensionType = DimensionTypeEnum.kVerticalDimensionType AndAlso _
+           RequestContainsFittingCenterV09(request) Then
+            Continue For
+        End If
 
         Try
             Dim firstAnchor As AutoDimAnchorV01 = request.Anchors.Item(0)
@@ -7856,36 +7806,307 @@ Function CreateOverallDimensionsV01( _
                 ResolveAnchorIntentForDimensionV07( _
                     sheet, lastAnchor, request.DimensionType)
 
-            If intent1 Is Nothing OrElse intent2 Is Nothing Then
-                Continue For
-            End If
+            If intent1 Is Nothing OrElse intent2 Is Nothing Then Continue For
 
             Dim dimObj As LinearGeneralDimension = _
                 sheet.DrawingDimensions.GeneralDimensions.AddLinear( _
                     request.OverallPlacementPoint, _
-                    intent1, _
-                    intent2, _
-                    request.DimensionType)
+                    intent1, intent2, request.DimensionType)
 
-            Try
-                dimObj.Precision = 0
-            Catch
-            End Try
-
+            Try : dimObj.Precision = 0 : Catch : End Try
             TagAutoObjectV01(dimObj)
             created += 1
 
         Catch ex As Exception
             Logger.Error( _
-                "Overall dimension failed for " & _
-                request.Name & _
-                ": " & _
-                ex.Message)
+                "Overall dimension failed for " & request.Name & _
+                ": " & ex.Message)
         End Try
-
     Next
 
     Return created
+End Function
+
+
+
+
+' ===================================================================
+' V0.9 DIMENSION PRESENTATION RULES
+' ===================================================================
+
+Function IsReferenceDimensionTypeV09(dimensionType As String) As Boolean
+    If String.IsNullOrWhiteSpace(dimensionType) Then Return False
+
+    Dim t As String = dimensionType.Trim().ToUpperInvariant()
+    Return _
+        t.StartsWith("TEE_") OrElse _
+        t.StartsWith("ELBOW_") OrElse _
+        t.StartsWith("REDUCER_")
+End Function
+
+
+Sub AddReferenceSegmentV09( _
+    request As AutoChainRequestV01, _
+    d As DimensionRecord)
+
+    If request Is Nothing OrElse d Is Nothing Then Exit Sub
+
+    Dim r As New AutoReferenceSegmentV09
+    r.X1 = d.X1 : r.Y1 = d.Y1 : r.Z1 = d.Z1
+    r.X2 = d.X2 : r.Y2 = d.Y2 : r.Z2 = d.Z2
+    r.DimensionType = d.DimensionType
+    request.ReferenceSegments.Add(r)
+End Sub
+
+
+Function IsReferencePairV09( _
+    request As AutoChainRequestV01, _
+    a As AutoDimAnchorV01, _
+    b As AutoDimAnchorV01) As Boolean
+
+    If request Is Nothing OrElse a Is Nothing OrElse b Is Nothing Then Return False
+
+    For Each r As AutoReferenceSegmentV09 In request.ReferenceSegments
+        Dim directMatch As Boolean = _
+            Dist3D(a.X, a.Y, a.Z, r.X1, r.Y1, r.Z1) < 0.2 AndAlso _
+            Dist3D(b.X, b.Y, b.Z, r.X2, r.Y2, r.Z2) < 0.2
+
+        Dim reverseMatch As Boolean = _
+            Dist3D(a.X, a.Y, a.Z, r.X2, r.Y2, r.Z2) < 0.2 AndAlso _
+            Dist3D(b.X, b.Y, b.Z, r.X1, r.Y1, r.Z1) < 0.2
+
+        If directMatch OrElse reverseMatch Then Return True
+    Next
+
+    Return False
+End Function
+
+
+Sub ApplyReferenceDisplayV09(dimObj As LinearGeneralDimension)
+    If dimObj Is Nothing Then Exit Sub
+
+    Try
+        Dim ft As String = dimObj.Text.FormattedText
+        If String.IsNullOrEmpty(ft) Then Exit Sub
+
+        If Not ft.TrimStart().StartsWith("(") Then
+            dimObj.Text.FormattedText = "(" & ft & ")"
+        End If
+
+        Try
+            If Not dimObj.AttributeSets.NameIsUsed("AutoReferenceDimension") Then
+                dimObj.AttributeSets.Add("AutoReferenceDimension")
+            End If
+        Catch
+        End Try
+    Catch ex As Exception
+        Logger.Error("Reference display formatting failed: " & ex.Message)
+    End Try
+End Sub
+
+
+Function CreatePhysicalChainGroupV09( _
+    sheet As Sheet, _
+    request As AutoChainRequestV01, _
+    startIndex As Integer, _
+    endIndex As Integer) As Integer
+
+    If endIndex <= startIndex Then Return 0
+
+    Try
+        Dim intents As ObjectCollection = _
+            ThisApplication.TransientObjects.CreateObjectCollection()
+
+        For i As Integer = startIndex To endIndex
+            Dim anchor As AutoDimAnchorV01 = request.Anchors.Item(i)
+            If anchor.Intent Is Nothing Then Return 0
+            intents.Add(anchor.Intent)
+        Next
+
+        Dim dimSet As ChainDimensionSet = _
+            sheet.DrawingDimensions.ChainDimensionSets.Add( _
+                intents, request.PlacementPoint, request.DimensionType)
+
+        Try : dimSet.Precision = 0 : Catch : End Try
+        TagAutoObjectV01(dimSet)
+
+        Dim expected As Integer = endIndex - startIndex
+        Dim memberCount As Integer = dimSet.Members.Count
+        Dim limit As Integer = Math.Min(expected, memberCount)
+
+        For m As Integer = 1 To limit
+            Dim a As AutoDimAnchorV01 = request.Anchors.Item(startIndex + m - 1)
+            Dim b As AutoDimAnchorV01 = request.Anchors.Item(startIndex + m)
+
+            If IsReferencePairV09(request, a, b) Then
+                ApplyReferenceDisplayV09(dimSet.Members.Item(m))
+            End If
+        Next
+
+        Logger.Info( _
+            "CHAIN_NATIVE " & request.Name & _
+            " | anchors=" & (endIndex - startIndex + 1).ToString())
+
+        Return 1
+
+    Catch ex As Exception
+        Logger.Error( _
+            "Physical chain group failed for " & request.Name & _
+            ": " & ex.Message & " | individual fallback")
+
+        Dim fallback As Integer = 0
+        For i As Integer = startIndex To endIndex - 1
+            fallback += CreateIntervalDimensionV09(sheet, request, i, i + 1)
+        Next
+        Return fallback
+    End Try
+End Function
+
+
+Function CreateIntervalDimensionV09( _
+    sheet As Sheet, _
+    request As AutoChainRequestV01, _
+    firstIndex As Integer, _
+    secondIndex As Integer) As Integer
+
+    Try
+        Dim a As AutoDimAnchorV01 = request.Anchors.Item(firstIndex)
+        Dim b As AutoDimAnchorV01 = request.Anchors.Item(secondIndex)
+
+        Dim intent1 As GeometryIntent = _
+            ResolveAnchorIntentForDimensionV07( _
+                sheet, a, request.DimensionType)
+
+        Dim intent2 As GeometryIntent = _
+            ResolveAnchorIntentForDimensionV07( _
+                sheet, b, request.DimensionType)
+
+        If intent1 Is Nothing OrElse intent2 Is Nothing Then Return 0
+
+        Dim textPoint As Point2d = request.PlacementPoint.Copy()
+
+        If request.DimensionType = DimensionTypeEnum.kHorizontalDimensionType Then
+            textPoint.X = (a.SheetPoint.X + b.SheetPoint.X) / 2.0
+        ElseIf request.DimensionType = DimensionTypeEnum.kVerticalDimensionType Then
+            textPoint.Y = (a.SheetPoint.Y + b.SheetPoint.Y) / 2.0
+        Else
+            textPoint.X = (a.SheetPoint.X + b.SheetPoint.X) / 2.0
+            textPoint.Y = (a.SheetPoint.Y + b.SheetPoint.Y) / 2.0
+        End If
+
+        Dim dimObj As LinearGeneralDimension = _
+            sheet.DrawingDimensions.GeneralDimensions.AddLinear( _
+                textPoint, intent1, intent2, request.DimensionType)
+
+        Try : dimObj.Precision = 0 : Catch : End Try
+        TagAutoObjectV01(dimObj)
+
+        If IsReferencePairV09(request, a, b) Then
+            ApplyReferenceDisplayV09(dimObj)
+        End If
+
+        Return 1
+
+    Catch ex As Exception
+        Logger.Error( _
+            "Interval dimension failed for " & request.Name & _
+            ": " & ex.Message)
+        Return 0
+    End Try
+End Function
+
+
+Function RequestContainsFittingCenterV09( _
+    request As AutoChainRequestV01) As Boolean
+
+    If request Is Nothing Then Return False
+    For Each a As AutoDimAnchorV01 In request.Anchors
+        If a.IsFittingCenter Then Return True
+    Next
+    Return False
+End Function
+
+
+Function CreateGlobalVerticalFlangeOverallV09( _
+    sheet As Sheet, _
+    view As DrawingView, _
+    nodes As List(Of NodeRecord)) As Integer
+
+    If sheet Is Nothing OrElse view Is Nothing OrElse nodes Is Nothing Then Return 0
+
+    Dim topNode As NodeRecord = Nothing
+    Dim bottomNode As NodeRecord = Nothing
+    Dim topPoint As Point2d = Nothing
+    Dim bottomPoint As Point2d = Nothing
+
+    For Each n As NodeRecord In nodes
+        If n Is Nothing OrElse n.ComponentType <> "FLANGE" OrElse _
+           Not n.HasOuterAnchor OrElse n.Occurrence Is Nothing Then
+            Continue For
+        End If
+
+        Try
+            Dim modelPoint As Inventor.Point = _
+                ThisApplication.TransientGeometry.CreatePoint( _
+                    n.OuterX / 10.0, n.OuterY / 10.0, n.OuterZ / 10.0)
+
+            Dim p As Point2d = view.ModelToSheetSpace(modelPoint)
+            If p Is Nothing Then Continue For
+
+            If topPoint Is Nothing OrElse p.Y > topPoint.Y Then
+                topPoint = p : topNode = n
+            End If
+
+            If bottomPoint Is Nothing OrElse p.Y < bottomPoint.Y Then
+                bottomPoint = p : bottomNode = n
+            End If
+        Catch
+        End Try
+    Next
+
+    If topNode Is Nothing OrElse bottomNode Is Nothing OrElse _
+       topNode Is bottomNode OrElse topPoint Is Nothing OrElse bottomPoint Is Nothing Then
+        Return 0
+    End If
+
+    If Math.Abs(topPoint.Y - bottomPoint.Y) < 0.50 Then Return 0
+
+    Dim intentTop As GeometryIntent = _
+        FindOccurrenceDrawingIntentV031( _
+            sheet, view, topNode.Occurrence, topPoint)
+
+    Dim intentBottom As GeometryIntent = _
+        FindOccurrenceDrawingIntentV031( _
+            sheet, view, bottomNode.Occurrence, bottomPoint)
+
+    If intentTop Is Nothing OrElse intentBottom Is Nothing Then Return 0
+
+    Try
+        Dim rightX As Double = view.Left + view.Width
+        Dim placement As Point2d = _
+            ThisApplication.TransientGeometry.CreatePoint2d( _
+                rightX + 1.45, _
+                (topPoint.Y + bottomPoint.Y) / 2.0)
+
+        Dim dimObj As LinearGeneralDimension = _
+            sheet.DrawingDimensions.GeneralDimensions.AddLinear( _
+                placement, _
+                intentTop, _
+                intentBottom, _
+                DimensionTypeEnum.kVerticalDimensionType)
+
+        Try : dimObj.Precision = 0 : Catch : End Try
+        TagAutoObjectV01(dimObj)
+
+        Logger.Info( _
+            "OVERALL_VERTICAL_FLANGE " & _
+            topNode.Code & " -> " & bottomNode.Code)
+
+        Return 1
+    Catch ex As Exception
+        Logger.Error("Global vertical flange overall failed: " & ex.Message)
+        Return 0
+    End Try
 End Function
 
 
@@ -8158,10 +8379,22 @@ Class AutoDimAnchorV01
 End Class
 
 
+Class AutoReferenceSegmentV09
+    Public X1 As Double
+    Public Y1 As Double
+    Public Z1 As Double
+    Public X2 As Double
+    Public Y2 As Double
+    Public Z2 As Double
+    Public DimensionType As String = ""
+End Class
+
+
 Class AutoChainRequestV01
     Public Name As String = ""
     Public Chain As StraightChain = Nothing
     Public Anchors As New List(Of AutoDimAnchorV01)
+    Public ReferenceSegments As New List(Of AutoReferenceSegmentV09)
     Public DimensionType As DimensionTypeEnum
     Public PlacementPoint As Point2d = Nothing
     Public OverallPlacementPoint As Point2d = Nothing

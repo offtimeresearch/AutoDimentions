@@ -2521,6 +2521,7 @@ Sub GenerateVerificationSvg( _
     DrawComponentLabels( _
         svg, _
         nodes, _
+        edges, _
         transform)
 
 
@@ -3483,12 +3484,13 @@ End Sub
 Sub DrawComponentLabels( _
     svg As StringBuilder, _
     nodes As List(Of NodeRecord), _
+    edges As List(Of EdgeRecord), _
     transform As SchematicTransform)
 
 
     ' Labels are deliberately kept away from the dimension zones.
-    ' No reference-point circles are drawn: they added clutter and
-    ' made flanges / elbows look less like a fabrication schematic.
+    ' For elbows, place E1 near the ACTUAL DRAWN ARC instead of at the
+    ' theoretical tangent-intersection / bend-center reference point.
 
     For Each n As NodeRecord In nodes
 
@@ -3520,17 +3522,94 @@ Sub DrawComponentLabels( _
 
         ElseIf n.ComponentType = "ELBOW" Then
 
-            ' Elbow reference point is normally in the empty quadrant
-            ' beside the bend.  Shift the label left so it does not sit
-            ' on top of the vertical 305 / 320 dimensions.
-            labelX = p.X - 18
-            labelY = p.Y - 14
-            anchor = "end"
+            ' -------------------------------------------------------
+            ' Put the elbow label near the middle of the quarter arc.
+            ' The elbow Ref point is the intersection of its two tangent
+            ' axes, which can be visually far away from the curved line.
+            ' -------------------------------------------------------
+
+            Dim elbowPorts As List(Of PortRecord) = _
+                GetUsedPorts(n, edges)
+
+            Dim positionedOnArc As Boolean = False
+
+
+            If elbowPorts.Count >= 2 Then
+
+                Dim a As SvgPoint = _
+                    MapCanonicalPoint( _
+                        transform, _
+                        elbowPorts.Item(0).X, _
+                        elbowPorts.Item(0).Y, _
+                        elbowPorts.Item(0).Z)
+
+                Dim b As SvgPoint = _
+                    MapCanonicalPoint( _
+                        transform, _
+                        elbowPorts.Item(1).X, _
+                        elbowPorts.Item(1).Y, _
+                        elbowPorts.Item(1).Z)
+
+
+                Dim v1x As Double = a.X - p.X
+                Dim v1y As Double = a.Y - p.Y
+                Dim v2x As Double = b.X - p.X
+                Dim v2y As Double = b.Y - p.Y
+
+                Dim r1 As Double = _
+                    Math.Sqrt(v1x * v1x + v1y * v1y)
+
+                Dim r2 As Double = _
+                    Math.Sqrt(v2x * v2x + v2y * v2y)
+
+
+                If r1 > 1.0 AndAlso r2 > 1.0 Then
+
+                    v1x /= r1
+                    v1y /= r1
+                    v2x /= r2
+                    v2y /= r2
+
+                    Dim bisX As Double = v1x + v2x
+                    Dim bisY As Double = v1y + v2y
+
+                    Dim bisLen As Double = _
+                        Math.Sqrt(bisX * bisX + bisY * bisY)
+
+
+                    If bisLen > 0.01 Then
+
+                        bisX /= bisLen
+                        bisY /= bisLen
+
+                        Dim radiusPixels As Double = (r1 + r2) / 2.0
+
+                        ' Slightly outside the centerline arc so the text
+                        ' is close to E1 without sitting directly on it.
+                        labelX = p.X + bisX * (radiusPixels + 18.0)
+                        labelY = p.Y + bisY * (radiusPixels + 18.0) - 4.0
+                        anchor = "middle"
+                        positionedOnArc = True
+
+                    End If
+
+                End If
+
+            End If
+
+
+            If Not positionedOnArc Then
+
+                labelX = p.X - 18
+                labelY = p.Y - 14
+                anchor = "end"
+
+            End If
 
         ElseIf n.ComponentType = "FLANGE" Then
 
             ' Place flange labels on the geometry side, not on the
-            ' dimension side.  Use the neighbour direction to determine
+            ' dimension side.  Use neighbour direction to determine
             ' whether the flange axis is mainly horizontal or vertical.
             If n.Neighbours.Count > 0 Then
 

@@ -7,29 +7,33 @@ Imports System.Text.RegularExpressions
 Imports System.Windows.Forms
 
 ' ============================================================================
-' CENTERLINE GENERATOR V0.1
+' CENTERLINE GENERATOR V0.2
 ' ----------------------------------------------------------------------------
 ' PURPOSE
-'   Create native Inventor drawing centerlines across one spool drawing view,
-'   using ONLY the two automatic cases already proven safe in CenterlineProbe:
+'   Create native Inventor drawing centerlines for straight PIPE and FLANGE
+'   occurrences using TWO REAL topology-known port points and Centerlines.Add.
 '
-'       PIPE   -> opposite projected silhouette lines -> AddBisector
-'       FLANGE -> opposite projected silhouette lines -> AddBisector
+' WHY V0.2
+'   - CenterlineProbe proved Centerlines.Add is stable in the user's Inventor.
+'   - No AddBisector is used anywhere in this file.
+'   - No silhouette-line pair guessing is used.
+'   - No centerline/centerline intersection intent is created.
+'   - No elbow or tee geometry is used to create centerlines.
 '
-' SAFETY RULES
-'   - No elbow geometry is ever passed to AddBisector.
-'   - No tee geometry is passed to AddBisector in V0.1.
-'   - Both lines must belong to the SAME occurrence.
-'   - The occurrence 3D port axis is projected into the drawing view first.
-'   - Only projected lines parallel to that known axis are eligible.
-'   - No dimensions are created here.
-'   - No centerline intersection intent is created here.
-'   - No centerline StartPoint/EndPoint modification is done here.
+' METHOD
+'   1. Find real planar circular port faces on a PIPE / FLANGE occurrence.
+'   2. Choose two coaxial, axis-aligned, well-separated port faces.
+'   3. Resolve each port to a real drawing point intent:
+'        line projection   -> midpoint intent
+'        circle/ellipse    -> center-point intent
+'   4. Pass those TWO point intents to Sheet.Centerlines.Add.
 '
-' WORKFLOW
-'   1. Run this rule on the drawing view.
-'   2. Verify the PIPE and FLANGE centerlines visually.
-'   3. DimensionGenerator will later reuse these native centerlines.
+' NOTES
+'   - For pipes this normally uses the two end-port faces.
+'   - For flanges it normally uses the two farthest coaxial circular faces.
+'   - Candidate selection strongly prefers the largest circular radius so bolt
+'     holes do not win over the actual pipe/flange bore/OD axis.
+'   - DimensionGenerator remains independent from centerline creation.
 ' ============================================================================
 
 Sub Main()
@@ -70,17 +74,18 @@ Sub Main()
             TryCast(descriptor.ReferencedDocument, AssemblyDocument)
 
         If asmDoc Is Nothing Then
-            MessageBox.Show("CenterlineGenerator currently expects an assembly drawing view.", "Centerline Generator")
+            MessageBox.Show( _
+                "CenterlineGenerator currently expects an assembly drawing view.", _
+                "Centerline Generator")
             Exit Sub
         End If
 
         Dim answer As DialogResult = _
             MessageBox.Show( _
-                "CenterlineGenerator V0.1 will create centerlines ONLY for PIPE and FLANGE occurrences." & _
+                "CenterlineGenerator V0.2 will regenerate centerlines ONLY for PIPE and FLANGE occurrences." & _
                 vbCrLf & vbCrLf & _
-                "It uses the same occurrence-only AddBisector method that passed CenterlineProbe modes 2 and 3." & _
-                vbCrLf & vbCrLf & _
-                "Existing centerlines created by this rule will be removed and regenerated." & _
+                "V0.2 uses two real projected port points + Centerlines.Add." & vbCrLf & _
+                "It does NOT use AddBisector or elbow/tee geometry." & _
                 vbCrLf & vbCrLf & _
                 "Continue?", _
                 "Centerline Generator", _
@@ -120,37 +125,55 @@ Sub Main()
                 flangeAttempts += 1
             End If
 
-            Dim axis As Axis2DRecord = _
-                GetPrimaryProjectedPortAxis(view, occ)
+            Dim ports As List(Of PortCandidateCL) = _
+                GetPortCandidatesCL(occ)
 
-            If axis Is Nothing Then
-                Logger.Info("CENTERLINE SKIP " & occ.Name & " | no visible projected port axis")
+            If ports.Count < 2 Then
+                Logger.Info( _
+                    "CENTERLINE SKIP " & kind & " | " & occ.Name & _
+                    " | usable circular port faces=" & ports.Count.ToString())
                 skipped += 1
                 Continue For
             End If
 
-            Dim pair As LinePairRecord = _
-                FindSafeOccurrencePair(view, occ, axis)
+            Dim pair As PortPairCL = _
+                FindBestPortPairCL(view, ports)
 
             If pair Is Nothing Then
                 Logger.Info( _
-                    "CENTERLINE SKIP " & occ.Name & _
-                    " | no safe same-occurrence silhouette pair" & _
-                    " | axis=" & NumCL(axis.UX) & "," & NumCL(axis.UY))
+                    "CENTERLINE SKIP " & kind & " | " & occ.Name & _
+                    " | no coaxial visible real-port pair")
                 skipped += 1
                 Continue For
             End If
 
             Logger.Info( _
-                "CENTERLINE PAIR " & kind & _
-                " | " & occ.Name & _
-                " | axis=" & NumCL(axis.UX) & "," & NumCL(axis.UY) & _
-                " | alignment=" & NumCL(pair.Alignment) & _
-                " | separation=" & NumCL(pair.Separation) & _
-                " | overlap=" & NumCL(pair.Overlap) & _
-                " | score=" & NumCL(pair.Score))
+                "CENTERLINE PORT_PAIR " & kind & " | " & occ.Name & _
+                " | faceA=" & pair.A.FaceIndex.ToString() & _
+                " faceB=" & pair.B.FaceIndex.ToString() & _
+                " | radiusA_cm=" & NumCL(pair.A.Radius) & _
+                " radiusB_cm=" & NumCL(pair.B.Radius) & _
+                " | axial_cm=" & NumCL(pair.AxialDistance) & _
+                " | lateral_cm=" & NumCL(pair.LateralDistance) & _
+                " | sheetSpan_cm=" & NumCL(pair.SheetDistance))
 
-            If CreateOccurrenceBisector(sheet, occ, kind, pair) Then
+            Dim intentA As GeometryIntent = _
+                FindPortPointIntentCL(sheet, view, occ, pair.A)
+
+            Dim intentB As GeometryIntent = _
+                FindPortPointIntentCL(sheet, view, occ, pair.B)
+
+            If intentA Is Nothing OrElse intentB Is Nothing Then
+                Logger.Error( _
+                    "CENTERLINE SKIP " & kind & " | " & occ.Name & _
+                    " | real port point intent missing")
+                skipped += 1
+                Continue For
+            End If
+
+            If CreateRegularPortCenterlineCL( _
+                sheet, occ, kind, pair, intentA, intentB) Then
+
                 created += 1
             Else
                 skipped += 1
@@ -158,10 +181,14 @@ Sub Main()
 
         Next
 
-        drawDoc.Update2(True)
+        Try
+            drawDoc.Update2(True)
+        Catch
+            Try : drawDoc.Update() : Catch : End Try
+        End Try
 
         MessageBox.Show( _
-            "CenterlineGenerator V0.1 finished." & vbCrLf & vbCrLf & _
+            "CenterlineGenerator V0.2 finished." & vbCrLf & vbCrLf & _
             "View: " & view.Name & vbCrLf & _
             "Pipe occurrences checked: " & pipeAttempts.ToString() & vbCrLf & _
             "Flange occurrences checked: " & flangeAttempts.ToString() & vbCrLf & _
@@ -171,9 +198,9 @@ Sub Main()
             "Centerline Generator")
 
     Catch ex As Exception
-        Logger.Error("CenterlineGenerator fatal: " & ex.ToString())
+        Logger.Error("CenterlineGenerator V0.2 fatal: " & ex.ToString())
         MessageBox.Show( _
-            "CenterlineGenerator failed:" & vbCrLf & vbCrLf & ex.Message, _
+            "CenterlineGenerator V0.2 failed:" & vbCrLf & vbCrLf & ex.Message, _
             "Centerline Generator")
     End Try
 
@@ -257,36 +284,45 @@ End Function
 
 
 ' ============================================================================
-' KNOWN 3D PORT AXIS -> 2D DRAWING AXIS
+' REAL PORT FACE SCAN
 ' ============================================================================
 
-Function GetPrimaryProjectedPortAxis( _
-    view As DrawingView, _
-    occ As ComponentOccurrence) As Axis2DRecord
+Function GetPortCandidatesCL( _
+    occ As ComponentOccurrence) As List(Of PortCandidateCL)
 
-    Dim axes As New List(Of Axis2DRecord)
+    Dim result As New List(Of PortCandidateCL)
+    Dim faceIndex As Integer = 0
 
     Try
         For Each body As SurfaceBody In occ.SurfaceBodies
             For Each face As Face In body.Faces
 
+                faceIndex += 1
+
                 If face.SurfaceType <> SurfaceTypeEnum.kPlaneSurface Then
                     Continue For
                 End If
 
-                Dim circularEdge As Edge = Nothing
+                Dim biggestCircle As Inventor.Circle = Nothing
 
                 For Each edge As Edge In face.Edges
                     Try
-                        If edge.GeometryType = CurveTypeEnum.kCircleCurve Then
-                            circularEdge = edge
-                            Exit For
+                        If edge.GeometryType <> CurveTypeEnum.kCircleCurve Then
+                            Continue For
+                        End If
+
+                        Dim circle As Inventor.Circle = _
+                            CType(edge.Geometry, Inventor.Circle)
+
+                        If biggestCircle Is Nothing OrElse _
+                           circle.Radius > biggestCircle.Radius Then
+                            biggestCircle = circle
                         End If
                     Catch
                     End Try
                 Next
 
-                If circularEdge Is Nothing Then Continue For
+                If biggestCircle Is Nothing Then Continue For
 
                 Dim plane As Inventor.Plane = Nothing
                 Try
@@ -295,192 +331,154 @@ Function GetPrimaryProjectedPortAxis( _
                     Continue For
                 End Try
 
-                Dim circle As Inventor.Circle = Nothing
-                Try
-                    circle = CType(circularEdge.Geometry, Inventor.Circle)
-                Catch
-                    Continue For
-                End Try
+                Dim p As New PortCandidateCL
+                p.FaceIndex = faceIndex
+                p.ModelFace = face
 
-                Dim nx As Double = plane.Normal.X
-                Dim ny As Double = plane.Normal.Y
-                Dim nz As Double = plane.Normal.Z
+                ' Occurrence proxy geometry is in assembly database units (cm).
+                p.X = biggestCircle.Center.X
+                p.Y = biggestCircle.Center.Y
+                p.Z = biggestCircle.Center.Z
+                p.Radius = biggestCircle.Radius
+
+                p.NX = plane.Normal.X
+                p.NY = plane.Normal.Y
+                p.NZ = plane.Normal.Z
 
                 Try
                     If face.IsParamReversed Then
-                        nx *= -1.0
-                        ny *= -1.0
-                        nz *= -1.0
+                        p.NX *= -1.0
+                        p.NY *= -1.0
+                        p.NZ *= -1.0
                     End If
                 Catch
                 End Try
 
-                Dim p0 As Inventor.Point = _
-                    ThisApplication.TransientGeometry.CreatePoint( _
-                        circle.Center.X, _
-                        circle.Center.Y, _
-                        circle.Center.Z)
+                Normalize3CL(p.NX, p.NY, p.NZ)
 
-                Dim p1 As Inventor.Point = _
-                    ThisApplication.TransientGeometry.CreatePoint( _
-                        circle.Center.X + nx * 10.0, _
-                        circle.Center.Y + ny * 10.0, _
-                        circle.Center.Z + nz * 10.0)
-
-                Dim s0 As Point2d = view.ModelToSheetSpace(p0)
-                Dim s1 As Point2d = view.ModelToSheetSpace(p1)
-
-                Dim ux As Double = s1.X - s0.X
-                Dim uy As Double = s1.Y - s0.Y
-                Dim length As Double = Math.Sqrt(ux * ux + uy * uy)
-
-                ' Axis nearly normal to this drawing view.
-                If length < 0.02 Then Continue For
-
-                ux /= length
-                uy /= length
-
-                NormalizeDirectionSignCL(ux, uy)
-
-                Dim duplicate As Boolean = False
-                For Each existing As Axis2DRecord In axes
-                    Dim alignment As Double = _
-                        Math.Abs(existing.UX * ux + existing.UY * uy)
-                    If alignment > 0.995 Then
-                        duplicate = True
-                        Exit For
-                    End If
-                Next
-
-                If Not duplicate Then
-                    Dim axis As New Axis2DRecord
-                    axis.UX = ux
-                    axis.UY = uy
-                    axes.Add(axis)
+                If VectorLength3CL(p.NX, p.NY, p.NZ) < 0.5 Then
+                    Continue For
                 End If
+
+                AddPortCandidateIfUniqueCL(result, p)
 
             Next
         Next
 
     Catch ex As Exception
-        Logger.Error("GetPrimaryProjectedPortAxis " & occ.Name & ": " & ex.Message)
+        Logger.Error("Port scan failed for " & occ.Name & ": " & ex.Message)
     End Try
 
-    If axes.Count = 0 Then Return Nothing
-
-    ' PIPE and FLANGE should have one principal port axis in a useful side view.
-    ' If several candidates survive, choose the direction that has the strongest
-    ' safe silhouette pair in the occurrence.
-    Dim bestAxis As Axis2DRecord = Nothing
-    Dim bestScore As Double = Double.MaxValue
-
-    For Each axis As Axis2DRecord In axes
-        Dim pair As LinePairRecord = FindSafeOccurrencePair(view, occ, axis)
-        If pair IsNot Nothing AndAlso pair.Score < bestScore Then
-            bestScore = pair.Score
-            bestAxis = axis
-        End If
-    Next
-
-    If bestAxis IsNot Nothing Then Return bestAxis
-    Return axes.Item(0)
+    Return result
 End Function
 
 
-Sub NormalizeDirectionSignCL( _
-    ByRef ux As Double, _
-    ByRef uy As Double)
+Sub AddPortCandidateIfUniqueCL( _
+    ports As List(Of PortCandidateCL), _
+    candidate As PortCandidateCL)
 
-    If ux < -0.000001 OrElse _
-       (Math.Abs(ux) <= 0.000001 AndAlso uy < 0) Then
-        ux *= -1.0
-        uy *= -1.0
-    End If
+    For i As Integer = 0 To ports.Count - 1
+        Dim existing As PortCandidateCL = ports.Item(i)
+
+        Dim d As Double = _
+            Dist3CL( _
+                existing.X, existing.Y, existing.Z, _
+                candidate.X, candidate.Y, candidate.Z)
+
+        Dim dot As Double = _
+            Math.Abs( _
+                existing.NX * candidate.NX + _
+                existing.NY * candidate.NY + _
+                existing.NZ * candidate.NZ)
+
+        ' Same physical station/axis: keep the face with the largest circular
+        ' radius. This suppresses duplicate annular faces and bolt-hole details.
+        If d < 0.01 AndAlso dot > 0.995 Then
+            If candidate.Radius > existing.Radius Then
+                ports.Item(i) = candidate
+            End If
+            Exit Sub
+        End If
+    Next
+
+    ports.Add(candidate)
 End Sub
 
 
 ' ============================================================================
-' EXACT SAME SAFE OCCURRENCE-ONLY PRINCIPLE AS CENTERLINE PROBE
+' CHOOSE TWO COAXIAL REAL PORTS
 ' ============================================================================
 
-Function FindSafeOccurrencePair( _
+Function FindBestPortPairCL( _
     view As DrawingView, _
-    occ As ComponentOccurrence, _
-    axis As Axis2DRecord) As LinePairRecord
+    ports As List(Of PortCandidateCL)) As PortPairCL
 
-    If axis Is Nothing Then Return Nothing
+    If ports Is Nothing OrElse ports.Count < 2 Then Return Nothing
 
-    Dim curves As DrawingCurvesEnumerator = Nothing
+    Dim best As PortPairCL = Nothing
+    Dim bestScore As Double = -Double.MaxValue
 
-    Try
-        curves = view.DrawingCurves(occ)
-    Catch ex As Exception
-        Logger.Error("DrawingCurves(" & occ.Name & ") failed: " & ex.Message)
-        Return Nothing
-    End Try
+    For i As Integer = 0 To ports.Count - 2
+        For j As Integer = i + 1 To ports.Count - 1
 
-    If curves Is Nothing Then Return Nothing
+            Dim a As PortCandidateCL = ports.Item(i)
+            Dim b As PortCandidateCL = ports.Item(j)
 
-    Dim lines As New List(Of DrawingCurveSegment)
+            Dim normalAlignment As Double = _
+                Math.Abs(a.NX * b.NX + a.NY * b.NY + a.NZ * b.NZ)
 
-    For Each curve As DrawingCurve In curves
-        For Each seg As DrawingCurveSegment In curve.Segments
-            If Not IsStraightVisibleSegmentCL(seg) Then Continue For
+            If normalAlignment < 0.98 Then Continue For
 
-            Dim alignmentToAxis As Double = _
-                SegmentAxisAlignmentCL(seg, axis.UX, axis.UY)
+            Dim dx As Double = b.X - a.X
+            Dim dy As Double = b.Y - a.Y
+            Dim dz As Double = b.Z - a.Z
+            Dim total As Double = Math.Sqrt(dx * dx + dy * dy + dz * dz)
 
-            If alignmentToAxis < 0.995 Then Continue For
+            If total < 0.05 Then Continue For
 
-            lines.Add(seg)
-        Next
-    Next
+            Dim axial As Double = _
+                Math.Abs(dx * a.NX + dy * a.NY + dz * a.NZ)
 
-    If lines.Count < 2 Then Return Nothing
+            If axial < 0.05 Then Continue For
 
-    Dim best As LinePairRecord = Nothing
+            Dim lateral2 As Double = total * total - axial * axial
+            If lateral2 < 0 Then lateral2 = 0
+            Dim lateral As Double = Math.Sqrt(lateral2)
 
-    For i As Integer = 0 To lines.Count - 2
-        For j As Integer = i + 1 To lines.Count - 1
+            ' 0.10 cm = 1 mm. Real pipe/flange ports should be essentially
+            ' coaxial, so reject offset bolt-hole or unrelated circular faces.
+            If lateral > 0.10 Then Continue For
 
-            Dim a As DrawingCurveSegment = lines.Item(i)
-            Dim b As DrawingCurveSegment = lines.Item(j)
+            Dim sheetA As Point2d = ProjectPortCenterCL(view, a)
+            Dim sheetB As Point2d = ProjectPortCenterCL(view, b)
+            If sheetA Is Nothing OrElse sheetB Is Nothing Then Continue For
 
-            Dim alignment As Double = SegmentParallelAlignmentCL(a, b)
-            If alignment < 0.995 Then Continue For
+            Dim sheetDistance As Double = _
+                Distance2CL(sheetA.X, sheetA.Y, sheetB.X, sheetB.Y)
 
-            Dim separation As Double = ParallelLineSeparationCL(a, b)
-            If separation < 0.02 Then Continue For
+            ' Axis is effectively normal to this drawing view.
+            If sheetDistance < 0.03 Then Continue For
 
-            Dim overlap As Double = AxisOverlapRatioCL(a, b)
-            If overlap < 0.45 Then Continue For
+            Dim minRadius As Double = Math.Min(a.Radius, b.Radius)
 
-            Dim lengthA As Double = SegmentLengthCL(a)
-            Dim lengthB As Double = SegmentLengthCL(b)
-            If lengthA < 0.02 OrElse lengthB < 0.02 Then Continue For
-
-            Dim lengthRatioError As Double = _
-                Math.Abs(lengthA - lengthB) / Math.Max(lengthA, lengthB)
-
-            ' Same philosophy as the successful CenterlineProbe auto modes:
-            ' very parallel + strong overlap + similar lengths.
-            ' A small reward for long lines makes PIPE silhouettes win over
-            ' tiny detail/end lines when several pairs are possible.
-            Dim averageLength As Double = (lengthA + lengthB) / 2.0
-
+            ' Primary preference: large circular geometry (real bore/OD rather
+            ' than bolt holes). Secondary preference: long real axial span.
             Dim score As Double = _
-                (1.0 - alignment) * 100.0 + _
-                (1.0 - overlap) * 5.0 + _
-                lengthRatioError * 3.0 - _
-                Math.Min(averageLength, 20.0) * 0.02
+                minRadius * 1000.0 + _
+                axial * 10.0 + _
+                sheetDistance - _
+                lateral * 1000.0 + _
+                normalAlignment
 
-            If best Is Nothing OrElse score < best.Score Then
-                best = New LinePairRecord
+            If best Is Nothing OrElse score > bestScore Then
+                bestScore = score
+                best = New PortPairCL
                 best.A = a
                 best.B = b
-                best.Alignment = alignment
-                best.Separation = separation
-                best.Overlap = overlap
+                best.NormalAlignment = normalAlignment
+                best.AxialDistance = axial
+                best.LateralDistance = lateral
+                best.SheetDistance = sheetDistance
                 best.Score = score
             End If
 
@@ -491,183 +489,203 @@ Function FindSafeOccurrencePair( _
 End Function
 
 
-Function IsStraightVisibleSegmentCL( _
-    seg As DrawingCurveSegment) As Boolean
+Function ProjectPortCenterCL( _
+    view As DrawingView, _
+    port As PortCandidateCL) As Point2d
 
-    If seg Is Nothing Then Return False
+    If view Is Nothing OrElse port Is Nothing Then Return Nothing
 
     Try
-        If seg.GeometryType <> Curve2dTypeEnum.kLineSegmentCurve2d Then
-            Return False
-        End If
+        Dim modelPoint As Inventor.Point = _
+            ThisApplication.TransientGeometry.CreatePoint( _
+                port.X, port.Y, port.Z)
 
-        If seg.StartPoint Is Nothing OrElse seg.EndPoint Is Nothing Then
-            Return False
-        End If
-
-        If Not seg.Visible Then Return False
-        If seg.HiddenLine Then Return False
-
-        Return SegmentLengthCL(seg) > 0.02
-
+        Return view.ModelToSheetSpace(modelPoint)
     Catch
-        Return False
+        Return Nothing
     End Try
 End Function
 
 
-Function SegmentAxisAlignmentCL( _
-    seg As DrawingCurveSegment, _
-    ux As Double, _
-    uy As Double) As Double
+' ============================================================================
+' REAL DRAWING POINT INTENT FOR A PORT
+' ============================================================================
 
-    Dim sx As Double = seg.EndPoint.X - seg.StartPoint.X
-    Dim sy As Double = seg.EndPoint.Y - seg.StartPoint.Y
-    Dim sl As Double = Math.Sqrt(sx * sx + sy * sy)
+Function FindPortPointIntentCL( _
+    sheet As Sheet, _
+    view As DrawingView, _
+    occ As ComponentOccurrence, _
+    port As PortCandidateCL) As GeometryIntent
 
-    If sl < 0.000001 Then Return 0
-
-    sx /= sl
-    sy /= sl
-
-    Return Math.Abs(sx * ux + sy * uy)
-End Function
-
-
-Function SegmentParallelAlignmentCL( _
-    a As DrawingCurveSegment, _
-    b As DrawingCurveSegment) As Double
-
-    Dim aux As Double = a.EndPoint.X - a.StartPoint.X
-    Dim auy As Double = a.EndPoint.Y - a.StartPoint.Y
-    Dim bux As Double = b.EndPoint.X - b.StartPoint.X
-    Dim buy As Double = b.EndPoint.Y - b.StartPoint.Y
-
-    Dim al As Double = Math.Sqrt(aux * aux + auy * auy)
-    Dim bl As Double = Math.Sqrt(bux * bux + buy * buy)
-
-    If al < 0.000001 OrElse bl < 0.000001 Then Return 0
-
-    aux /= al
-    auy /= al
-    bux /= bl
-    buy /= bl
-
-    Return Math.Abs(aux * bux + auy * buy)
-End Function
-
-
-Function ParallelLineSeparationCL( _
-    a As DrawingCurveSegment, _
-    b As DrawingCurveSegment) As Double
-
-    Dim dx As Double = a.EndPoint.X - a.StartPoint.X
-    Dim dy As Double = a.EndPoint.Y - a.StartPoint.Y
-    Dim l As Double = Math.Sqrt(dx * dx + dy * dy)
-
-    If l < 0.000001 Then Return 0
-
-    Dim mx As Double = (b.StartPoint.X + b.EndPoint.X) / 2.0
-    Dim my As Double = (b.StartPoint.Y + b.EndPoint.Y) / 2.0
-
-    Return _
-        Math.Abs( _
-            dx * (a.StartPoint.Y - my) - _
-            (a.StartPoint.X - mx) * dy) / l
-End Function
-
-
-Function AxisOverlapRatioCL( _
-    a As DrawingCurveSegment, _
-    b As DrawingCurveSegment) As Double
-
-    Dim ux As Double = a.EndPoint.X - a.StartPoint.X
-    Dim uy As Double = a.EndPoint.Y - a.StartPoint.Y
-    Dim l As Double = Math.Sqrt(ux * ux + uy * uy)
-
-    If l < 0.000001 Then Return 0
-
-    ux /= l
-    uy /= l
-
-    Dim a0 As Double = a.StartPoint.X * ux + a.StartPoint.Y * uy
-    Dim a1 As Double = a.EndPoint.X * ux + a.EndPoint.Y * uy
-    Dim b0 As Double = b.StartPoint.X * ux + b.StartPoint.Y * uy
-    Dim b1 As Double = b.EndPoint.X * ux + b.EndPoint.Y * uy
-
-    If a1 < a0 Then
-        Dim t As Double = a0
-        a0 = a1
-        a1 = t
+    If sheet Is Nothing OrElse view Is Nothing OrElse _
+       occ Is Nothing OrElse port Is Nothing Then
+        Return Nothing
     End If
 
-    If b1 < b0 Then
-        Dim t As Double = b0
-        b0 = b1
-        b1 = t
-    End If
+    Dim target As Point2d = ProjectPortCenterCL(view, port)
+    If target Is Nothing Then Return Nothing
 
-    Dim overlap As Double = _
-        Math.Max(0, Math.Min(a1, b1) - Math.Max(a0, b0))
+    ' First choice: drawing curves generated specifically from the real model
+    ' face that topology identified as the port face.
+    Try
+        Dim curves As DrawingCurvesEnumerator = _
+            view.DrawingCurves(port.ModelFace)
 
-    Dim denom As Double = Math.Min(a1 - a0, b1 - b0)
-    If denom < 0.000001 Then Return 0
+        Dim intent As GeometryIntent = _
+            BestPointIntentFromCurvesCL(sheet, curves, target, 0.30)
 
-    Return overlap / denom
+        If intent IsNot Nothing Then
+            Logger.Info( _
+                "PORT_INTENT FACE | " & occ.Name & _
+                " | face=" & port.FaceIndex.ToString())
+            Return intent
+        End If
+    Catch ex As Exception
+        Logger.Info( _
+            "PORT_INTENT face lookup fallback | " & occ.Name & _
+            " face=" & port.FaceIndex.ToString() & _
+            " | " & ex.Message)
+    End Try
+
+    ' Conservative fallback: only curves belonging to the SAME occurrence,
+    ' and only point intents close to the topology-projected port center.
+    Try
+        Dim occurrenceCurves As DrawingCurvesEnumerator = _
+            view.DrawingCurves(occ)
+
+        Dim fallback As GeometryIntent = _
+            BestPointIntentFromCurvesCL(sheet, occurrenceCurves, target, 0.18)
+
+        If fallback IsNot Nothing Then
+            Logger.Info( _
+                "PORT_INTENT OCCURRENCE_FALLBACK | " & occ.Name & _
+                " | face=" & port.FaceIndex.ToString())
+            Return fallback
+        End If
+    Catch ex As Exception
+        Logger.Error( _
+            "PORT_INTENT occurrence lookup failed | " & occ.Name & _
+            " | " & ex.Message)
+    End Try
+
+    Return Nothing
 End Function
 
 
-Function SegmentLengthCL(seg As DrawingCurveSegment) As Double
+Function BestPointIntentFromCurvesCL( _
+    sheet As Sheet, _
+    curves As DrawingCurvesEnumerator, _
+    target As Point2d, _
+    maxDistance As Double) As GeometryIntent
 
-    If seg Is Nothing OrElse _
-       seg.StartPoint Is Nothing OrElse _
-       seg.EndPoint Is Nothing Then
-        Return 0
-    End If
+    If curves Is Nothing OrElse target Is Nothing Then Return Nothing
 
-    Dim dx As Double = seg.EndPoint.X - seg.StartPoint.X
-    Dim dy As Double = seg.EndPoint.Y - seg.StartPoint.Y
+    Dim bestCurve As DrawingCurve = Nothing
+    Dim bestIntentType As Integer = 0
+    Dim bestDistance As Double = maxDistance
 
-    Return Math.Sqrt(dx * dx + dy * dy)
+    For Each curve As DrawingCurve In curves
+
+        Try
+            If curve.CurveType = CurveTypeEnum.kLineSegmentCurve AndAlso _
+               curve.StartPoint IsNot Nothing AndAlso _
+               curve.EndPoint IsNot Nothing Then
+
+                Dim mx As Double = (curve.StartPoint.X + curve.EndPoint.X) / 2.0
+                Dim my As Double = (curve.StartPoint.Y + curve.EndPoint.Y) / 2.0
+                Dim d As Double = Distance2CL(mx, my, target.X, target.Y)
+
+                If d <= bestDistance Then
+                    bestDistance = d
+                    bestCurve = curve
+                    bestIntentType = 1   ' midpoint of a real line
+                End If
+
+            ElseIf _
+                (curve.CurveType = CurveTypeEnum.kCircleCurve OrElse _
+                 curve.CurveType = CurveTypeEnum.kCircularArcCurve OrElse _
+                 curve.CurveType = CurveTypeEnum.kEllipseFullCurve OrElse _
+                 curve.CurveType = CurveTypeEnum.kEllipticalArcCurve) AndAlso _
+                 curve.CenterPoint IsNot Nothing Then
+
+                Dim d As Double = _
+                    Distance2CL( _
+                        curve.CenterPoint.X, curve.CenterPoint.Y, _
+                        target.X, target.Y)
+
+                If d <= bestDistance Then
+                    bestDistance = d
+                    bestCurve = curve
+                    bestIntentType = 2   ' center of real circular/elliptic curve
+                End If
+            End If
+        Catch
+        End Try
+    Next
+
+    If bestCurve Is Nothing Then Return Nothing
+
+    Try
+        If bestIntentType = 1 Then
+            Return _
+                sheet.CreateGeometryIntent( _
+                    bestCurve, _
+                    PointIntentEnum.kMidPointIntent)
+        End If
+
+        If bestIntentType = 2 Then
+            Return _
+                sheet.CreateGeometryIntent( _
+                    bestCurve, _
+                    PointIntentEnum.kCenterPointIntent)
+        End If
+    Catch ex As Exception
+        Logger.Error("Creating real port point intent failed: " & ex.Message)
+    End Try
+
+    Return Nothing
 End Function
 
 
 ' ============================================================================
-' NATIVE CENTERLINE CREATION
+' NATIVE REGULAR CENTERLINE - PROVEN MODE-4 MECHANISM
 ' ============================================================================
 
-Function CreateOccurrenceBisector( _
+Function CreateRegularPortCenterlineCL( _
     sheet As Sheet, _
     occ As ComponentOccurrence, _
     kind As String, _
-    pair As LinePairRecord) As Boolean
+    pair As PortPairCL, _
+    intentA As GeometryIntent, _
+    intentB As GeometryIntent) As Boolean
 
-    If pair Is Nothing OrElse pair.A Is Nothing OrElse pair.B Is Nothing Then
+    If sheet Is Nothing OrElse occ Is Nothing OrElse pair Is Nothing OrElse _
+       intentA Is Nothing OrElse intentB Is Nothing Then
         Return False
     End If
 
     Try
-        Dim intentA As GeometryIntent = _
-            sheet.CreateGeometryIntent(pair.A.Parent)
+        Dim points As ObjectCollection = _
+            ThisApplication.TransientObjects.CreateObjectCollection()
 
-        Dim intentB As GeometryIntent = _
-            sheet.CreateGeometryIntent(pair.B.Parent)
+        points.Add(intentA)
+        points.Add(intentB)
 
-        Logger.Info("ADD_BISECTOR BEGIN " & kind & " | " & occ.Name)
+        Logger.Info("CENTERLINES_ADD BEGIN " & kind & " | " & occ.Name)
 
         Dim cl As Centerline = _
-            sheet.Centerlines.AddBisector(intentA, intentB)
+            sheet.Centerlines.Add(points)
 
-        Logger.Info("ADD_BISECTOR RETURN " & kind & " | " & occ.Name)
+        Logger.Info("CENTERLINES_ADD RETURN " & kind & " | " & occ.Name)
 
         If cl Is Nothing Then Return False
 
-        TagGeneratorCenterline(cl, occ, kind)
+        TagGeneratorCenterline(cl, occ, kind, pair)
         Return True
 
     Catch ex As Exception
         Logger.Error( _
-            "AddBisector exception " & kind & _
+            "Centerlines.Add exception " & kind & _
             " | " & occ.Name & _
             " | " & ex.Message)
         Return False
@@ -678,17 +696,26 @@ End Function
 Sub TagGeneratorCenterline( _
     cl As Centerline, _
     occ As ComponentOccurrence, _
-    kind As String)
+    kind As String, _
+    pair As PortPairCL)
 
     If cl Is Nothing Then Exit Sub
 
     Try
-        Dim tags As AttributeSet = _
-            cl.AttributeSets.Add("AutoSpoolCenterline")
+        Dim tags As AttributeSet = Nothing
 
-        tags.Add("Occurrence", ValueTypeEnum.kStringType, occ.Name)
-        tags.Add("ComponentType", ValueTypeEnum.kStringType, kind)
-        tags.Add("GeneratorVersion", ValueTypeEnum.kStringType, "0.1")
+        Try
+            tags = cl.AttributeSets.Item("AutoSpoolCenterline")
+        Catch
+            tags = cl.AttributeSets.Add("AutoSpoolCenterline")
+        End Try
+
+        Try : tags.Add("Occurrence", ValueTypeEnum.kStringType, occ.Name) : Catch : End Try
+        Try : tags.Add("ComponentType", ValueTypeEnum.kStringType, kind) : Catch : End Try
+        Try : tags.Add("GeneratorVersion", ValueTypeEnum.kStringType, "0.2") : Catch : End Try
+        Try : tags.Add("Method", ValueTypeEnum.kStringType, "REGULAR_PORT_POINTS") : Catch : End Try
+        Try : tags.Add("FaceA", ValueTypeEnum.kIntegerType, pair.A.FaceIndex) : Catch : End Try
+        Try : tags.Add("FaceB", ValueTypeEnum.kIntegerType, pair.B.FaceIndex) : Catch : End Try
     Catch
     End Try
 End Sub
@@ -716,21 +743,77 @@ End Sub
 
 
 ' ============================================================================
-' DATA / FORMAT
+' MATH / DATA
 ' ============================================================================
 
-Class Axis2DRecord
-    Public UX As Double
-    Public UY As Double
+Sub Normalize3CL( _
+    ByRef x As Double, _
+    ByRef y As Double, _
+    ByRef z As Double)
+
+    Dim l As Double = VectorLength3CL(x, y, z)
+    If l < 0.0000001 Then Exit Sub
+
+    x /= l
+    y /= l
+    z /= l
+End Sub
+
+
+Function VectorLength3CL( _
+    x As Double, _
+    y As Double, _
+    z As Double) As Double
+
+    Return Math.Sqrt(x * x + y * y + z * z)
+End Function
+
+
+Function Dist3CL( _
+    x1 As Double, y1 As Double, z1 As Double, _
+    x2 As Double, y2 As Double, z2 As Double) As Double
+
+    Dim dx As Double = x2 - x1
+    Dim dy As Double = y2 - y1
+    Dim dz As Double = z2 - z1
+    Return Math.Sqrt(dx * dx + dy * dy + dz * dz)
+End Function
+
+
+Function Distance2CL( _
+    x1 As Double, y1 As Double, _
+    x2 As Double, y2 As Double) As Double
+
+    Dim dx As Double = x2 - x1
+    Dim dy As Double = y2 - y1
+    Return Math.Sqrt(dx * dx + dy * dy)
+End Function
+
+
+Class PortCandidateCL
+    Public FaceIndex As Integer
+    Public ModelFace As Object = Nothing
+
+    Public X As Double
+    Public Y As Double
+    Public Z As Double
+
+    Public NX As Double
+    Public NY As Double
+    Public NZ As Double
+
+    Public Radius As Double
 End Class
 
 
-Class LinePairRecord
-    Public A As DrawingCurveSegment = Nothing
-    Public B As DrawingCurveSegment = Nothing
-    Public Alignment As Double
-    Public Separation As Double
-    Public Overlap As Double
+Class PortPairCL
+    Public A As PortCandidateCL = Nothing
+    Public B As PortCandidateCL = Nothing
+
+    Public NormalAlignment As Double
+    Public AxialDistance As Double
+    Public LateralDistance As Double
+    Public SheetDistance As Double
     Public Score As Double
 End Class
 

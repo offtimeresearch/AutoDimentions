@@ -2,6 +2,7 @@
 from pathlib import Path
 import re
 
+# Trigger marker: V0.3.1 safe projected-curve isolation test.
 p = Path('DimensionGenerator.vb')
 s = p.read_text(encoding='utf-8')
 

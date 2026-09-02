@@ -1,0 +1,340 @@
+                Continue For
+            End If
+
+
+            Dim bestFlange As NodeRecord = Nothing
+            Dim bestFlangePort As PortRecord = Nothing
+            Dim bestScore As Double = Double.MaxValue
+
+
+            For Each flangeNode As NodeRecord In nodes
+
+
+                If flangeNode.ComponentType <> "FLANGE" Then
+                    Continue For
+                End If
+
+
+                If flangeNode.Neighbours.Count > 0 Then
+                    Continue For
+                End If
+
+
+                For Each flangePort As PortRecord In flangeNode.Ports
+
+
+                    Dim dx As Double = _
+                        flangePort.X - hostPort.X
+
+                    Dim dy As Double = _
+                        flangePort.Y - hostPort.Y
+
+                    Dim dz As Double = _
+                        flangePort.Z - hostPort.Z
+
+
+                    Dim totalDistance As Double = _
+                        Math.Sqrt( _
+                            dx * dx + _
+                            dy * dy + _
+                            dz * dz)
+
+
+                    If totalDistance > flangeSearchDistance Then
+                        Continue For
+                    End If
+
+
+                    Dim axialDistance As Double = _
+                        Math.Abs( _
+                            dx * hostPort.NX + _
+                            dy * hostPort.NY + _
+                            dz * hostPort.NZ)
+
+
+                    Dim lateralSquared As Double = _
+                        totalDistance * totalDistance - _
+                        axialDistance * axialDistance
+
+
+                    If lateralSquared < 0 Then
+                        lateralSquared = 0
+                    End If
+
+
+                    Dim lateralDistance As Double = _
+                        Math.Sqrt(lateralSquared)
+
+
+                    If lateralDistance > lateralTolerance Then
+                        Continue For
+                    End If
+
+
+                    Dim alignment As Double = _
+                        Math.Abs( _
+                            NormalDot( _
+                                hostPort, _
+                                flangePort))
+
+
+                    If alignment < minimumNormalAlignment Then
+                        Continue For
+                    End If
+
+
+                    Dim score As Double = _
+                        totalDistance + _
+                        lateralDistance * 10.0 + _
+                        (1.0 - alignment) * 100.0
+
+
+                    If score < bestScore Then
+
+                        bestScore = score
+                        bestFlange = flangeNode
+                        bestFlangePort = flangePort
+
+                    End If
+
+                Next
+
+            Next
+
+
+            If bestFlange IsNot Nothing AndAlso _
+               bestFlangePort IsNot Nothing Then
+
+
+                Dim connectionDistance As Double = _
+                    Dist3D( _
+                        hostPort.X, _
+                        hostPort.Y, _
+                        hostPort.Z, _
+                        bestFlangePort.X, _
+                        bestFlangePort.Y, _
+                        bestFlangePort.Z)
+
+
+                AddConnection( _
+                    result, _
+                    hostPort, _
+                    bestFlangePort, _
+                    "FLANGED_END", _
+                    connectionDistance)
+
+
+                ' ---------------------------------------------------
+                ' CRITICAL FIX:
+                '
+                ' Determine flange OUTWARD direction from the host
+                ' occurrence toward the flange occurrence, then choose
+                ' the farthest coaxial flange face in that direction.
+                '
+                ' This correctly selects e.g. the 15 mm outer face,
+                ' instead of the misleading nearest 5 mm internal face.
+                ' ---------------------------------------------------
+
+                FindFlangeOuterAnchor( _
+                    bestFlange, _
+                    hostNode, _
+                    hostPort, _
+                    bestFlangePort)
+
+            End If
+
+        Next
+
+    Next
+
+
+    Return result
+
+End Function
+
+
+
+' ===================================================================
+' CORRECT FLANGE OUTER FACE
+' ===================================================================
+
+Sub FindFlangeOuterAnchor( _
+    flange As NodeRecord, _
+    hostNode As NodeRecord, _
+    hostPort As PortRecord, _
+    connectionFace As PortRecord)
+
+
+    ' ---------------------------------------------------------------
+    ' Host port axis.
+    ' ---------------------------------------------------------------
+
+    Dim ax As Double = hostPort.NX
+    Dim ay As Double = hostPort.NY
+    Dim az As Double = hostPort.NZ
+
+
+    Dim axisLength As Double = _
+        Math.Sqrt( _
+            ax * ax + _
+            ay * ay + _
+            az * az)
+
+
+    If axisLength < 0.000001 Then
+        Exit Sub
+    End If
+
+
+    ax /= axisLength
+    ay /= axisLength
+    az /= axisLength
+
+
+    ' ---------------------------------------------------------------
+    ' Decide which sign of the host axis points outward into flange.
+    '
+    ' Use HOST OCCURRENCE CENTER -> FLANGE OCCURRENCE CENTER.
+    '
+    ' This is the key correction.
+    ' ---------------------------------------------------------------
+
+    Dim hfx As Double = flange.X - hostNode.X
+    Dim hfy As Double = flange.Y - hostNode.Y
+    Dim hfz As Double = flange.Z - hostNode.Z
+
+
+    Dim outwardDot As Double = _
+        hfx * ax + _
+        hfy * ay + _
+        hfz * az
+
+
+    If outwardDot < 0 Then
+
+        ax *= -1.0
+        ay *= -1.0
+        az *= -1.0
+
+    End If
+
+
+    Dim bestPort As PortRecord = Nothing
+    Dim bestSignedDistance As Double = Double.MinValue
+
+
+    For Each candidate As PortRecord In flange.Ports
+
+
+        ' Same flange axis.
+        Dim alignment As Double = _
+            Math.Abs( _
+                candidate.NX * ax + _
+                candidate.NY * ay + _
+                candidate.NZ * az)
+
+
+        If alignment < 0.90 Then
+            Continue For
+        End If
+
+
+        Dim dx As Double = candidate.X - hostPort.X
+        Dim dy As Double = candidate.Y - hostPort.Y
+        Dim dz As Double = candidate.Z - hostPort.Z
+
+
+        Dim signedDistance As Double = _
+            dx * ax + _
+            dy * ay + _
+            dz * az
+
+
+        ' Must be on outward side, allowing tiny modelling noise.
+        If signedDistance < -1.0 Then
+            Continue For
+        End If
+
+
+        Dim totalSquared As Double = _
+            dx * dx + _
+            dy * dy + _
+            dz * dz
+
+        Dim lateralSquared As Double = _
+            totalSquared - _
+            signedDistance * signedDistance
+
+
+        If lateralSquared < 0 Then
+            lateralSquared = 0
+        End If
+
+
+        Dim lateralDistance As Double = _
+            Math.Sqrt(lateralSquared)
+
+
+        If lateralDistance > 2.5 Then
+            Continue For
+        End If
+
+
+        If signedDistance > bestSignedDistance Then
+
+            bestSignedDistance = signedDistance
+            bestPort = candidate
+
+        End If
+
+    Next
+
+
+    If bestPort Is Nothing Then
+        bestPort = connectionFace
+    End If
+
+
+    flange.HasOuterAnchor = True
+
+    flange.InnerFaceIndex = connectionFace.FaceIndex
+    flange.OuterFaceIndex = bestPort.FaceIndex
+
+    flange.OuterX = bestPort.X
+    flange.OuterY = bestPort.Y
+    flange.OuterZ = bestPort.Z
+
+    flange.OuterOffset = _
+        Dist3D( _
+            hostPort.X, hostPort.Y, hostPort.Z, _
+            bestPort.X, bestPort.Y, bestPort.Z)
+
+
+    flange.FlangeHostCode = hostNode.Code
+
+    flange.HostPortX = hostPort.X
+    flange.HostPortY = hostPort.Y
+    flange.HostPortZ = hostPort.Z
+
+End Sub
+
+
+
+' ===================================================================
+' ADD CONNECTION
+' ===================================================================
+
+Sub AddConnection( _
+    edges As List(Of EdgeRecord), _
+    portA As PortRecord, _
+    portB As PortRecord, _
+    connectionType As String, _
+    connectionDistance As Double)
+
+
+    If HasConnection( _
+        edges, _
+        portA.Owner, _
+        portB.Owner) Then
+
+        Exit Sub

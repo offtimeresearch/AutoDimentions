@@ -11,7 +11,7 @@ Imports System.Windows.Forms
 Sub Main()
 
     ' =================================================================
-    ' AUTOSPOOL - SINGLE SPOOL TOPOLOGY / DIMENSION VERIFIER V0.4
+    ' AUTOSPOOL - SINGLE SPOOL TOPOLOGY / DIMENSION VERIFIER V0.5
     '
     ' GOAL
     ' ----
@@ -54,7 +54,7 @@ Sub Main()
 
         MessageBox.Show( _
             "No active Inventor document.", _
-            "AutoSpool V0.4")
+            "AutoSpool V0.5")
 
         Exit Sub
 
@@ -66,7 +66,7 @@ Sub Main()
 
         MessageBox.Show( _
             "Open ONE spool .IAM and run this rule again.", _
-            "AutoSpool V0.4")
+            "AutoSpool V0.5")
 
         Exit Sub
 
@@ -81,7 +81,7 @@ Sub Main()
 
         MessageBox.Show( _
             "Please save the spool assembly before running the verifier.", _
-            "AutoSpool V0.4")
+            "AutoSpool V0.5")
 
         Exit Sub
 
@@ -295,7 +295,7 @@ Sub Main()
 
         MessageBox.Show( _
             summary.ToString(), _
-            "AutoSpool V0.4")
+            "AutoSpool V0.5")
 
 
         Try
@@ -314,9 +314,9 @@ Sub Main()
     Catch ex As Exception
 
         MessageBox.Show( _
-            "AutoSpool V0.4 failed:" & vbCrLf & vbCrLf & _
+            "AutoSpool V0.5 failed:" & vbCrLf & vbCrLf & _
             ex.Message, _
-            "AutoSpool V0.4")
+            "AutoSpool V0.5")
 
         Logger.Error(ex.ToString())
 
@@ -2091,7 +2091,7 @@ Sub WriteCompleteCsv( _
             "Used," & _
             "ConnectedTo," & _
             "ConnectionType," & _
-            "ConnectionDistance_mm," & _
+            "TopologyGap_mm," & _
             "ReferenceType," & _
             "ReferenceX_mm," & _
             "ReferenceY_mm," & _
@@ -2958,8 +2958,8 @@ Function BuildCanonicalTransform( _
 
 
     ' Leave plenty of space for dimensions.
-    Dim geometryW As Double = w * 0.72
-    Dim geometryH As Double = h * 0.58
+    Dim geometryW As Double = w * 0.82
+    Dim geometryH As Double = h * 0.68
 
 
     Dim scaleU As Double = geometryW / rangeU
@@ -3125,7 +3125,7 @@ Sub DrawManufacturingGeometry( _
             """ y1=""" & Num(a.Y) & _
             """ x2=""" & Num(b.X) & _
             """ y2=""" & Num(b.Y) & _
-            """ stroke=""black"" stroke-width=""4""/>")
+            """ stroke=""black"" stroke-width=""5"" stroke-linecap=""round""/>")
 
     Next
 
@@ -3486,6 +3486,10 @@ Sub DrawComponentLabels( _
     transform As SchematicTransform)
 
 
+    ' Labels are deliberately kept away from the dimension zones.
+    ' No reference-point circles are drawn: they added clutter and
+    ' made flanges / elbows look less like a fabrication schematic.
+
     For Each n As NodeRecord In nodes
 
 
@@ -3497,23 +3501,86 @@ Sub DrawComponentLabels( _
                 n.RefZ)
 
 
-        svg.AppendLine( _
-            "<circle cx=""" & Num(p.X) & _
-            """ cy=""" & Num(p.Y) & _
-            """ r=""3"" fill=""white"" stroke=""black"" stroke-width=""1""/>")
+        Dim labelX As Double = p.X + 10
+        Dim labelY As Double = p.Y - 14
+        Dim anchor As String = "start"
+
+
+        If n.ComponentType = "PIPE" Then
+
+            labelX = p.X
+            labelY = p.Y - 16
+            anchor = "middle"
+
+        ElseIf n.ComponentType = "TEE" Then
+
+            labelX = p.X + 12
+            labelY = p.Y - 14
+            anchor = "start"
+
+        ElseIf n.ComponentType = "ELBOW" Then
+
+            ' Elbow reference point is normally in the empty quadrant
+            ' beside the bend.  Shift the label left so it does not sit
+            ' on top of the vertical 305 / 320 dimensions.
+            labelX = p.X - 18
+            labelY = p.Y - 14
+            anchor = "end"
+
+        ElseIf n.ComponentType = "FLANGE" Then
+
+            ' Place flange labels on the geometry side, not on the
+            ' dimension side.  Use the neighbour direction to determine
+            ' whether the flange axis is mainly horizontal or vertical.
+            If n.Neighbours.Count > 0 Then
+
+                Dim q As SvgPoint = _
+                    MapCanonicalPoint( _
+                        transform, _
+                        n.Neighbours.Item(0).RefX, _
+                        n.Neighbours.Item(0).RefY, _
+                        n.Neighbours.Item(0).RefZ)
+
+                Dim dx As Double = p.X - q.X
+                Dim dy As Double = p.Y - q.Y
+
+                If Math.Abs(dx) >= Math.Abs(dy) Then
+
+                    labelX = p.X
+                    labelY = p.Y - 18
+                    anchor = "middle"
+
+                Else
+
+                    labelX = p.X - 16
+                    labelY = p.Y + 4
+                    anchor = "end"
+
+                End If
+
+            Else
+
+                labelX = p.X
+                labelY = p.Y - 18
+                anchor = "middle"
+
+            End If
+
+        End If
 
 
         svg.AppendLine( _
-            "<text x=""" & Num(p.X + 8) & _
-            """ y=""" & Num(p.Y - 8) & _
-            """ font-family=""Arial"" font-size=""12"" font-weight=""bold"">" & _
+            "<text x=""" & Num(labelX) & _
+            """ y=""" & Num(labelY) & _
+            """ text-anchor=""" & anchor & _
+            """ font-family=""Arial"" font-size=""13"" font-weight=""bold"" " & _
+            "style=""paint-order:stroke;stroke:white;stroke-width:5px;stroke-linejoin:round"">" & _
             XmlText(n.Code) & _
             "</text>")
 
     Next
 
 End Sub
-
 
 
 ' ===================================================================
@@ -3575,17 +3642,24 @@ Sub DrawAllDimensions( _
 
 
         ' -----------------------------------------------------------
-        ' Component dimensions belonging to this straight run.
-        ' All share one dimension level.
+        ' Level 1: component / fabrication dimensions.
+        ' Main run dimensions sit below the spool.  Secondary vertical
+        ' runs sit to the right.  Extra spacing keeps 178/193 and
+        ' 305/320 visually separate.
         ' -----------------------------------------------------------
 
-        For Each d As DimensionRecord In componentDimensions
+        Dim componentOffset As Double = 46.0
 
+        If chain.Index = longestChainIndex Then
+            componentOffset = 42.0
+        End If
+
+
+        For Each d As DimensionRecord In componentDimensions
 
             If d.ChainIndex <> chain.Index Then
                 Continue For
             End If
-
 
             DrawOneDimension( _
                 svg, _
@@ -3593,23 +3667,30 @@ Sub DrawAllDimensions( _
                 transform, _
                 normalX, _
                 normalY, _
-                30.0, _
+                componentOffset, _
                 False)
 
         Next
 
 
         ' -----------------------------------------------------------
-        ' Overall dimension on a farther level.
+        ' Level 2/3: overall run dimensions.
+        ' Main 1276 is farthest from the geometry; secondary 193/320
+        ' are pushed far enough away from their component dimensions.
         ' -----------------------------------------------------------
 
-        For Each d As DimensionRecord In overallDimensions
+        Dim overallOffset As Double = 98.0
 
+        If chain.Index = longestChainIndex Then
+            overallOffset = 96.0
+        End If
+
+
+        For Each d As DimensionRecord In overallDimensions
 
             If d.ChainIndex <> chain.Index Then
                 Continue For
             End If
-
 
             DrawOneDimension( _
                 svg, _
@@ -3617,7 +3698,7 @@ Sub DrawAllDimensions( _
                 transform, _
                 normalX, _
                 normalY, _
-                66.0, _
+                overallOffset, _
                 True)
 
         Next
@@ -3625,17 +3706,12 @@ Sub DrawAllDimensions( _
     Next
 
 
-    ' ---------------------------------------------------------------
-    ' Any component dimension not assigned to a chain.
-    ' ---------------------------------------------------------------
-
+    ' Any component dimension not assigned to a straight chain.
     For Each d As DimensionRecord In componentDimensions
-
 
         If d.ChainIndex <> 0 Then
             Continue For
         End If
-
 
         Dim a As SvgPoint = _
             MapCanonicalPoint( _
@@ -3647,29 +3723,22 @@ Sub DrawAllDimensions( _
                 transform, _
                 d.X2, d.Y2, d.Z2)
 
-
         Dim nx As Double = 0
         Dim ny As Double = 0
 
-
-        ChooseDimensionNormal( _
-            a, b, _
-            False, _
-            nx, ny)
-
+        ChooseDimensionNormal(a, b, False, nx, ny)
 
         DrawOneDimension( _
             svg, _
             d, _
             transform, _
             nx, ny, _
-            30.0, _
+            46.0, _
             False)
 
     Next
 
 End Sub
-
 
 
 Sub ChooseDimensionNormal( _
@@ -3791,65 +3860,91 @@ Sub DrawOneDimension( _
         b.Y + ny * offset)
 
 
-    Dim strokeWidth As Double = 1.0
+    Dim lineDX As Double = db.X - da.X
+    Dim lineDY As Double = db.Y - da.Y
+
+    Dim pixelLength As Double = _
+        Math.Sqrt( _
+            lineDX * lineDX + _
+            lineDY * lineDY)
 
 
-    If isOverall Then
-        strokeWidth = 1.5
+    If pixelLength < 0.001 Then
+        Exit Sub
     End If
 
 
-    ' Extension lines.
+    Dim ux As Double = lineDX / pixelLength
+    Dim uy As Double = lineDY / pixelLength
+
+
+    Dim extensionOvershoot As Double = 7.0
+
+    Dim daExt As New SvgPoint( _
+        da.X + nx * extensionOvershoot, _
+        da.Y + ny * extensionOvershoot)
+
+    Dim dbExt As New SvgPoint( _
+        db.X + nx * extensionOvershoot, _
+        db.Y + ny * extensionOvershoot)
+
+
+    ' Extension lines deliberately overshoot the dimension line a little,
+    ' closer to conventional fabrication drawing practice.
     svg.AppendLine( _
         "<line x1=""" & Num(a.X) & _
         """ y1=""" & Num(a.Y) & _
-        """ x2=""" & Num(da.X) & _
-        """ y2=""" & Num(da.Y) & _
+        """ x2=""" & Num(daExt.X) & _
+        """ y2=""" & Num(daExt.Y) & _
         """ stroke=""black"" stroke-width=""0.8""/>")
-
 
     svg.AppendLine( _
         "<line x1=""" & Num(b.X) & _
         """ y1=""" & Num(b.Y) & _
-        """ x2=""" & Num(db.X) & _
-        """ y2=""" & Num(db.Y) & _
+        """ x2=""" & Num(dbExt.X) & _
+        """ y2=""" & Num(dbExt.Y) & _
         """ stroke=""black"" stroke-width=""0.8""/>")
 
 
-    ' Dimension line.
+    Dim strokeWidth As Double = 1.0
+    If isOverall Then strokeWidth = 1.5
+
+
     svg.AppendLine( _
         "<line x1=""" & Num(da.X) & _
         """ y1=""" & Num(da.Y) & _
         """ x2=""" & Num(db.X) & _
         """ y2=""" & Num(db.Y) & _
         """ stroke=""black"" stroke-width=""" & _
-        Num(strokeWidth) & """/>") 
+        Num(strokeWidth) & """/>")
 
 
-    ' Ticks.
     DrawDimensionTick(svg, da, db)
     DrawDimensionTick(svg, db, da)
 
 
-    Dim mx As Double = (da.X + db.X) / 2.0
-    Dim my As Double = (da.Y + db.Y) / 2.0
+    Dim textX As Double = (da.X + db.X) / 2.0
+    Dim textY As Double = (da.Y + db.Y) / 2.0 - 6.0
+
+
+    ' Short dimensions such as the 15 mm flange thickness cannot fit
+    ' between the extension lines at normal schematic scale.  Put their
+    ' text just outside the measured segment instead of stacking it on
+    ' the flange symbol or another dimension.
+    If pixelLength < 58.0 Then
+
+        textX = db.X + ux * 28.0
+        textY = db.Y + uy * 28.0 - 5.0
+
+    End If
 
 
     Dim angle As Double = _
-        Math.Atan2( _
-            db.Y - da.Y, _
-            db.X - da.X) * _
+        Math.Atan2(lineDY, lineDX) * _
         180.0 / Math.PI
 
-
-    If angle > 90 Then
-        angle -= 180
-    End If
-
-
-    If angle < -90 Then
-        angle += 180
-    End If
+    If angle > 90 Then angle -= 180
+    If angle < -90 Then angle += 180
 
 
     Dim textValue As String = _
@@ -3859,28 +3954,25 @@ Sub DrawOneDimension( _
                 CultureInfo.InvariantCulture)
 
 
-    If isOverall Then
-        textValue = textValue
-    End If
-
-
+    ' White text halo guarantees readability when dimensions cross the
+    ' schematic or when several short dimensions are close together.
     svg.AppendLine( _
-        "<text x=""" & Num(mx) & _
-        """ y=""" & Num(my - 5) & _
+        "<text x=""" & Num(textX) & _
+        """ y=""" & Num(textY) & _
         """ text-anchor=""middle"" " & _
         "font-family=""Arial"" font-size=""" & _
-        If(isOverall, "14", "12") & _
+        If(isOverall, "15", "13") & _
         """ font-weight=""" & _
         If(isOverall, "bold", "normal") & _
-        """ transform=""rotate(" & _
+        """ style=""paint-order:stroke;stroke:white;stroke-width:6px;stroke-linejoin:round"" " & _
+        "transform=""rotate(" & _
         Num(angle) & " " & _
-        Num(mx) & " " & _
-        Num(my - 5) & ")"">" & _
+        Num(textX) & " " & _
+        Num(textY) & ")"">" & _
         XmlText(textValue) & _
         "</text>")
 
 End Sub
-
 
 
 Sub DrawDimensionTick( _

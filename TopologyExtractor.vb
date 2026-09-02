@@ -39,7 +39,7 @@ Sub Main()
     '   FLANGE : host port -> outer flange face
     '   PIPE   : port -> port
     '   TEE    : center -> each port
-    '   ELBOW  : true quarter-arc between ports, with center reference
+    '   ELBOW  : thin 90-degree routing symbol through axis intersection
     '
     ' Straight collinear primitive segments are automatically grouped
     ' into runs.  This is what produces useful overall dimensions such
@@ -3412,19 +3412,23 @@ Sub DrawElbowArc( _
 
 
     ' ===============================================================
-    ' V0.7 - CLOSED ELBOW PROFILE
+    ' V0.8 - THIN 90 DEGREE ELBOW SYMBOL
     '
-    ' The previous renderer drew only the elbow centerline.  For visual
-    ' verification that made the bend look "open" compared with the
-    ' fabrication drawing.  Draw two concentric arcs using the detected
-    ' end-face radius as the pipe half-width, then close the profile at
-    ' both tangent ends.
+    ' This is intentionally NOT a pipe profile and NOT a curved
+    ' centerline.  The verification schematic uses a simple routing
+    ' symbol:
     '
-    ' Dimension geometry remains based on the centerline radius and is
-    ' intentionally unchanged.
+    '        -----------+
+    '                   |
+    '                   |
+    '
+    ' The corner is the extracted elbow reference point: the
+    ' intersection of the two port axes.  This keeps the schematic
+    ' visually close to fabrication-style routing while dimensions
+    ' continue to use the real extracted 305 mm geometry.
     ' ===============================================================
 
-    Dim c As SvgPoint = _
+    Dim corner As SvgPoint = _
         MapCanonicalPoint( _
             transform, _
             elbow.RefX, _
@@ -3446,149 +3450,15 @@ Sub DrawElbowArc( _
             port2.Z)
 
 
-    Dim rA As Double = _
-        Math.Sqrt( _
-            (a.X - c.X) * (a.X - c.X) + _
-            (a.Y - c.Y) * (a.Y - c.Y))
-
-    Dim rB As Double = _
-        Math.Sqrt( _
-            (b.X - c.X) * (b.X - c.X) + _
-            (b.Y - c.Y) * (b.Y - c.Y))
-
-
-    If rA < 1 OrElse rB < 1 Then
-        Exit Sub
-    End If
-
-
-    Dim centerRadius As Double = (rA + rB) / 2.0
-
-
-    Dim u1x As Double = (a.X - c.X) / rA
-    Dim u1y As Double = (a.Y - c.Y) / rA
-
-    Dim u2x As Double = (b.X - c.X) / rB
-    Dim u2y As Double = (b.Y - c.Y) / rB
-
-
-    Dim cross2d As Double = _
-        u1x * u2y - _
-        u1y * u2x
-
-
-    Dim sweep As Integer = 0
-
-    If cross2d > 0 Then
-        sweep = 1
-    End If
-
-
-    ' ---------------------------------------------------------------
-    ' Convert the detected elbow end-face radius from mm to pixels.
-    ' PortRecord.Radius comes from the largest circular boundary on the
-    ' end face and therefore gives a useful visual pipe half-width.
-    ' Keep a conservative fallback/clamp for unusual fitting geometry.
-    ' ---------------------------------------------------------------
-
-    Dim pipeRadiusMm As Double = 0
-
-    If port1.Radius > 0 AndAlso port2.Radius > 0 Then
-        pipeRadiusMm = (port1.Radius + port2.Radius) / 2.0
-    ElseIf port1.Radius > 0 Then
-        pipeRadiusMm = port1.Radius
-    ElseIf port2.Radius > 0 Then
-        pipeRadiusMm = port2.Radius
-    End If
-
-
-    Dim halfWidth As Double = pipeRadiusMm * transform.Scale
-
-    If halfWidth < 8.0 Then
-        halfWidth = 8.0
-    End If
-
-    Dim maxHalfWidth As Double = centerRadius * 0.42
-
-    If halfWidth > maxHalfWidth Then
-        halfWidth = maxHalfWidth
-    End If
-
-
-    Dim innerRadius As Double = centerRadius - halfWidth
-    Dim outerRadius As Double = centerRadius + halfWidth
-
-    If innerRadius < 3.0 Then
-        innerRadius = 3.0
-    End If
-
-
-    Dim aInner As New SvgPoint( _
-        c.X + u1x * innerRadius, _
-        c.Y + u1y * innerRadius)
-
-    Dim bInner As New SvgPoint( _
-        c.X + u2x * innerRadius, _
-        c.Y + u2y * innerRadius)
-
-    Dim aOuter As New SvgPoint( _
-        c.X + u1x * outerRadius, _
-        c.Y + u1y * outerRadius)
-
-    Dim bOuter As New SvgPoint( _
-        c.X + u2x * outerRadius, _
-        c.Y + u2y * outerRadius)
-
-
-    ' Inner outline.
-    svg.AppendLine( _
-        "<path d=""M " & _
-        Num(aInner.X) & " " & Num(aInner.Y) & _
-        " A " & _
-        Num(innerRadius) & " " & Num(innerRadius) & _
-        " 0 0 " & sweep.ToString() & " " & _
-        Num(bInner.X) & " " & Num(bInner.Y) & _
-        """ fill=""none"" stroke=""black"" stroke-width=""3""/>")
-
-
-    ' Outer outline - this is the missing line the verification image
-    ' previously did not show near E1.
-    svg.AppendLine( _
-        "<path d=""M " & _
-        Num(aOuter.X) & " " & Num(aOuter.Y) & _
-        " A " & _
-        Num(outerRadius) & " " & Num(outerRadius) & _
-        " 0 0 " & sweep.ToString() & " " & _
-        Num(bOuter.X) & " " & Num(bOuter.Y) & _
-        """ fill=""none"" stroke=""black"" stroke-width=""3""/>")
-
-
-    ' Close both tangent ends so the elbow reads as a pipe profile,
-    ' not as a single open centerline curve.
-    svg.AppendLine( _
-        "<line x1=""" & Num(aInner.X) & _
-        """ y1=""" & Num(aInner.Y) & _
-        """ x2=""" & Num(aOuter.X) & _
-        """ y2=""" & Num(aOuter.Y) & _
-        """ stroke=""black"" stroke-width=""3""/>")
-
-    svg.AppendLine( _
-        "<line x1=""" & Num(bInner.X) & _
-        """ y1=""" & Num(bInner.Y) & _
-        """ x2=""" & Num(bOuter.X) & _
-        """ y2=""" & Num(bOuter.Y) & _
-        """ stroke=""black"" stroke-width=""3""/>")
-
-
-    ' Thin dashed centerline retained only as a visual reference.
     svg.AppendLine( _
         "<path d=""M " & _
         Num(a.X) & " " & Num(a.Y) & _
-        " A " & _
-        Num(centerRadius) & " " & Num(centerRadius) & _
-        " 0 0 " & sweep.ToString() & " " & _
+        " L " & _
+        Num(corner.X) & " " & Num(corner.Y) & _
+        " L " & _
         Num(b.X) & " " & Num(b.Y) & _
-        """ fill=""none"" stroke=""black"" stroke-width=""1"" stroke-dasharray=""8,6""/>")
+        """ fill=""none"" stroke=""black"" stroke-width=""3"" " & _
+        "stroke-linejoin=""miter"" stroke-linecap=""square""/>")
 
 End Sub
 
@@ -3639,89 +3509,11 @@ Sub DrawComponentLabels( _
 
         ElseIf n.ComponentType = "ELBOW" Then
 
-            ' -------------------------------------------------------
-            ' Put the elbow label near the middle of the quarter arc.
-            ' The elbow Ref point is the intersection of its two tangent
-            ' axes, which can be visually far away from the curved line.
-            ' -------------------------------------------------------
-
-            Dim elbowPorts As List(Of PortRecord) = _
-                GetUsedPorts(n, edges)
-
-            Dim positionedOnArc As Boolean = False
-
-
-            If elbowPorts.Count >= 2 Then
-
-                Dim a As SvgPoint = _
-                    MapCanonicalPoint( _
-                        transform, _
-                        elbowPorts.Item(0).X, _
-                        elbowPorts.Item(0).Y, _
-                        elbowPorts.Item(0).Z)
-
-                Dim b As SvgPoint = _
-                    MapCanonicalPoint( _
-                        transform, _
-                        elbowPorts.Item(1).X, _
-                        elbowPorts.Item(1).Y, _
-                        elbowPorts.Item(1).Z)
-
-
-                Dim v1x As Double = a.X - p.X
-                Dim v1y As Double = a.Y - p.Y
-                Dim v2x As Double = b.X - p.X
-                Dim v2y As Double = b.Y - p.Y
-
-                Dim r1 As Double = _
-                    Math.Sqrt(v1x * v1x + v1y * v1y)
-
-                Dim r2 As Double = _
-                    Math.Sqrt(v2x * v2x + v2y * v2y)
-
-
-                If r1 > 1.0 AndAlso r2 > 1.0 Then
-
-                    v1x /= r1
-                    v1y /= r1
-                    v2x /= r2
-                    v2y /= r2
-
-                    Dim bisX As Double = v1x + v2x
-                    Dim bisY As Double = v1y + v2y
-
-                    Dim bisLen As Double = _
-                        Math.Sqrt(bisX * bisX + bisY * bisY)
-
-
-                    If bisLen > 0.01 Then
-
-                        bisX /= bisLen
-                        bisY /= bisLen
-
-                        Dim radiusPixels As Double = (r1 + r2) / 2.0
-
-                        ' Slightly outside the centerline arc so the text
-                        ' is close to E1 without sitting directly on it.
-                        labelX = p.X + bisX * (radiusPixels + 18.0)
-                        labelY = p.Y + bisY * (radiusPixels + 18.0) - 4.0
-                        anchor = "middle"
-                        positionedOnArc = True
-
-                    End If
-
-                End If
-
-            End If
-
-
-            If Not positionedOnArc Then
-
-                labelX = p.X - 18
-                labelY = p.Y - 14
-                anchor = "end"
-
-            End If
+            ' V0.8: elbow is drawn as a thin 90-degree routing symbol.
+            ' Keep the label beside its extracted corner/reference point.
+            labelX = p.X + 14
+            labelY = p.Y - 14
+            anchor = "start"
 
         ElseIf n.ComponentType = "FLANGE" Then
 

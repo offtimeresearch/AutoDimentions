@@ -1,0 +1,340 @@
+AddReference "System.Windows.Forms"
+
+Imports System
+Imports System.Text
+Imports System.Text.RegularExpressions
+Imports System.Collections.Generic
+Imports System.Globalization
+Imports System.Windows.Forms
+
+
+Sub Main()
+
+    ' =================================================================
+    ' AUTOSPOOL - SINGLE SPOOL TOPOLOGY / DIMENSION VERIFIER V0.4
+    '
+    ' GOAL
+    ' ----
+    ' Work on ONE active spool IAM until the extracted schematic and
+    ' dimensions are trustworthy.
+    '
+    ' OUTPUTS
+    ' -------
+    '   _AutoSpoolSingle\<Assembly>_VERIFY.svg
+    '   _AutoSpoolSingle\<Assembly>_DATA.csv
+    '
+    ' IMPORTANT IDEA
+    ' --------------
+    ' Connection geometry and manufacturing dimension geometry are
+    ' deliberately separated.
+    '
+    ' For a flange:
+    '   - nearest suitable circular planar face = connection helper only
+    '   - outermost flange face in the outward spool direction =
+    '       schematic / manufacturing reference
+    '
+    ' The schematic is NOT a generic graph.  It is built from an
+    ' extracted manufacturing centerline skeleton:
+    '
+    '   FLANGE : host port -> outer flange face
+    '   PIPE   : port -> port
+    '   TEE    : center -> each port
+    '   ELBOW  : true quarter-arc between ports, with center reference
+    '
+    ' Straight collinear primitive segments are automatically grouped
+    ' into runs.  This is what produces useful overall dimensions such
+    ' as:
+    '
+    '   flange + pipe + tee + elbow tangent = overall straight run
+    '
+    ' =================================================================
+
+
+    If ThisApplication.ActiveDocument Is Nothing Then
+
+        MessageBox.Show( _
+            "No active Inventor document.", _
+            "AutoSpool V0.4")
+
+        Exit Sub
+
+    End If
+
+
+    If ThisApplication.ActiveDocument.DocumentType <> _
+       DocumentTypeEnum.kAssemblyDocumentObject Then
+
+        MessageBox.Show( _
+            "Open ONE spool .IAM and run this rule again.", _
+            "AutoSpool V0.4")
+
+        Exit Sub
+
+    End If
+
+
+    Dim asmDoc As AssemblyDocument = _
+        CType(ThisApplication.ActiveDocument, AssemblyDocument)
+
+
+    If String.IsNullOrWhiteSpace(asmDoc.FullFileName) Then
+
+        MessageBox.Show( _
+            "Please save the spool assembly before running the verifier.", _
+            "AutoSpool V0.4")
+
+        Exit Sub
+
+    End If
+
+
+    Dim asmName As String = _
+        System.IO.Path.GetFileNameWithoutExtension(asmDoc.FullFileName)
+
+    Dim asmFolder As String = _
+        System.IO.Path.GetDirectoryName(asmDoc.FullFileName)
+
+    Dim outputFolder As String = _
+        System.IO.Path.Combine(asmFolder, "_AutoSpoolSingle")
+
+
+    System.IO.Directory.CreateDirectory(outputFolder)
+
+
+    Dim csvFile As String = _
+        System.IO.Path.Combine( _
+            outputFolder, _
+            SafeFileName(asmName) & "_DATA.csv")
+
+    Dim svgFile As String = _
+        System.IO.Path.Combine( _
+            outputFolder, _
+            SafeFileName(asmName) & "_VERIFY.svg")
+
+
+    Try
+
+        ' =============================================================
+        ' 1. READ COMPONENTS / PORT CANDIDATES
+        ' =============================================================
+
+        Dim nodes As List(Of NodeRecord) = _
+            ScanAssembly(asmDoc)
+
+
+        AssignDisplayCodes(nodes)
+
+
+        ' =============================================================
+        ' 2. DETECT COMPONENT CONNECTIONS
+        ' =============================================================
+
+        Dim edges As List(Of EdgeRecord) = _
+            DetectConnections(nodes)
+
+
+        ' =============================================================
+        ' 3. CALCULATE ELBOW / TEE / FLANGE REFERENCE POINTS
+        ' =============================================================
+
+        ComputeReferencePoints(nodes, edges)
+
+
+        ' =============================================================
+        ' 4. BUILD TRUE MANUFACTURING SKELETON
+        ' =============================================================
+
+        Dim primitives As List(Of PrimitiveSegment) = _
+            BuildManufacturingPrimitives(nodes, edges)
+
+
+        ' =============================================================
+        ' 5. COMPONENT-LEVEL DIMENSIONS
+        ' =============================================================
+
+        Dim componentDimensions As List(Of DimensionRecord) = _
+            BuildComponentDimensions(nodes, edges)
+
+
+        ' =============================================================
+        ' 6. FIND MAXIMAL STRAIGHT RUNS
+        '
+        ' Example:
+        '
+        ' outer flange -> flange thickness -> pipe -> tee run ->
+        ' elbow tangent center
+        '
+        ' all become ONE straight overall chain.
+        ' =============================================================
+
+        Dim chains As List(Of StraightChain) = _
+            BuildStraightChains(primitives)
+
+
+        Dim overallDimensions As List(Of DimensionRecord) = _
+            BuildOverallDimensions(chains)
+
+
+        AssignDimensionsToChains( _
+            componentDimensions, _
+            chains)
+
+
+        ' =============================================================
+        ' 7. GRAPH DIAGNOSTICS
+        ' =============================================================
+
+        Dim graphGroups As Integer = _
+            CountGraphGroups(nodes)
+
+        Dim unresolved As New List(Of String)
+
+
+        For Each n As NodeRecord In nodes
+
+            If n.Neighbours.Count = 0 Then
+                unresolved.Add(n.Code)
+            End If
+
+        Next
+
+
+        ' =============================================================
+        ' 8. WRITE COMPLETE CSV
+        ' =============================================================
+
+        WriteCompleteCsv( _
+            asmName, _
+            nodes, _
+            edges, _
+            primitives, _
+            componentDimensions, _
+            chains, _
+            overallDimensions, _
+            graphGroups, _
+            unresolved, _
+            csvFile)
+
+
+        ' =============================================================
+        ' 9. GENERATE CLEAN VISUAL SCHEMATIC
+        ' =============================================================
+
+        GenerateVerificationSvg( _
+            asmName, _
+            nodes, _
+            edges, _
+            primitives, _
+            componentDimensions, _
+            chains, _
+            overallDimensions, _
+            graphGroups, _
+            unresolved, _
+            svgFile)
+
+
+        ' =============================================================
+        ' 10. SUMMARY
+        ' =============================================================
+
+        Dim summary As New StringBuilder
+
+        summary.AppendLine("AutoSpool verification complete.")
+        summary.AppendLine()
+        summary.AppendLine("Components: " & nodes.Count.ToString())
+        summary.AppendLine("Connections: " & edges.Count.ToString())
+        summary.AppendLine("Graph groups: " & graphGroups.ToString())
+
+        If unresolved.Count > 0 Then
+
+            summary.AppendLine( _
+                "Unresolved: " & _
+                String.Join(", ", unresolved.ToArray()))
+
+        Else
+
+            summary.AppendLine("Unresolved: none")
+
+        End If
+
+
+        summary.AppendLine()
+        summary.AppendLine("Extracted component dimensions:")
+
+
+        For Each d As DimensionRecord In componentDimensions
+
+            summary.AppendLine( _
+                "  " & _
+                d.Label & _
+                " = " & _
+                FormatMm(d.Value))
+
+        Next
+
+
+        summary.AppendLine()
+        summary.AppendLine("Extracted overall straight runs:")
+
+
+        For Each d As DimensionRecord In overallDimensions
+
+            summary.AppendLine( _
+                "  " & _
+                d.Label & _
+                " = " & _
+                FormatMm(d.Value))
+
+        Next
+
+
+        summary.AppendLine()
+        summary.AppendLine("Output folder:")
+        summary.AppendLine(outputFolder)
+
+
+        MessageBox.Show( _
+            summary.ToString(), _
+            "AutoSpool V0.4")
+
+
+        Try
+
+            System.Diagnostics.Process.Start(svgFile)
+
+        Catch
+
+            System.Diagnostics.Process.Start( _
+                "explorer.exe", _
+                outputFolder)
+
+        End Try
+
+
+    Catch ex As Exception
+
+        MessageBox.Show( _
+            "AutoSpool V0.4 failed:" & vbCrLf & vbCrLf & _
+            ex.Message, _
+            "AutoSpool V0.4")
+
+        Logger.Error(ex.ToString())
+
+    End Try
+
+End Sub
+
+
+
+' ===================================================================
+' SCAN ASSEMBLY
+' ===================================================================
+
+Function ScanAssembly( _
+    asmDoc As AssemblyDocument) As List(Of NodeRecord)
+
+
+    Dim result As New List(Of NodeRecord)
+
+    Dim occurrences As ComponentOccurrencesEnumerator = _
+        asmDoc.ComponentDefinition.Occurrences.AllLeafOccurrences

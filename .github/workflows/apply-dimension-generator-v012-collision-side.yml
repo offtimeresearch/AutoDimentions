@@ -1,0 +1,50 @@
+name: Apply DimensionGenerator V0.12 Collision Side
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'tools/apply_dimension_generator_v012_collision_side.py'
+      - '.github/workflows/apply-dimension-generator-v012-collision-side.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Patch DimensionGenerator
+        run: python3 tools/apply_dimension_generator_v012_collision_side.py
+
+      - name: Validate DimensionGenerator
+        run: python3 tools/validate_ilogic.py DimensionGenerator.vb
+
+      - name: V0.12 safety assertions
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          t = Path('DimensionGenerator.vb').read_text(encoding='utf-8')
+          assert 'DimensionGenerator V0.12' in t
+          assert 'ScoreVerticalChainSideV012' in t
+          assert 'VerticalWitnessCrossingV012' in t
+          assert 'VERTICAL_SIDE_CHOICE' in t
+          assert 'Tolerance.SetToReference' in t
+          assert 'GLOBAL_VERTICAL_CHAIN' in t
+          print('V0.12 assertions passed')
+          PY
+
+      - name: Commit V0.12 generator
+        run: |
+          if git diff --quiet -- DimensionGenerator.vb; then
+            echo 'No DimensionGenerator changes to commit.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add DimensionGenerator.vb
+          git commit -m 'Choose vertical chain side by collision score V0.12'
+          git push

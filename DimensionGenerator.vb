@@ -193,10 +193,8 @@ Sub Main()
                 sheet, _
                 chainRequests)
 
-        Dim attachmentCount As Integer = _
-            CreateAttachmentDimensionsV01( _
-                sheet, _
-                attachmentPlan)
+        Dim attachmentCount As Integer = 0
+        Logger.Info("V0.3.1 safe mode: attachment dimensions deferred until native centerlines are re-enabled.")
 
 
         drawDoc.Update2(True)
@@ -205,16 +203,16 @@ Sub Main()
         MessageBox.Show( _
             "Auto dimensions created." & vbCrLf & vbCrLf & _
             "View: " & view.Name & vbCrLf & _
-            "Chain sets: " & chainCount.ToString() & vbCrLf & _
+            "Projected-curve linear dimensions: " & chainCount.ToString() & vbCrLf & _
             "Overall dimensions: " & overallCount.ToString() & vbCrLf & _
             "Attachment dimensions/sets: " & attachmentCount.ToString(), _
-            "DimensionGenerator V0.3")
+            "DimensionGenerator V0.3.1")
 
 
     Catch ex As Exception
 
         MessageBox.Show( _
-            "DimensionGenerator V0.3 failed:" & vbCrLf & vbCrLf & _
+            "DimensionGenerator V0.3.1 failed:" & vbCrLf & vbCrLf & _
             ex.Message, _
             "Auto Dimensions")
 
@@ -4702,7 +4700,7 @@ End Function
 
 
 ' ===================================================================
-' DIMENSION GENERATOR V0.3 - PROJECTED DRAWING GEOMETRY LAYER
+' DIMENSION GENERATOR V0.3.1 - SAFE PROJECTED CURVES ONLY
 ' ===================================================================
 
 Function GetTargetDrawingViewV01( _
@@ -5069,10 +5067,6 @@ Function ResolveProjectedAnchorsV03( _
     nodes As List(Of NodeRecord), _
     anchors As List(Of AutoDimAnchorV01)) As Integer
 
-    ' Create native Inventor centerlines from the actual projected view.
-    ' These are not sketch entities; they are sheet Centerline objects.
-    CreateAutomatedCenterlinesV03(sheet, view)
-
     Dim unresolved As Integer = 0
 
     For Each anchor As AutoDimAnchorV01 In anchors
@@ -5139,67 +5133,94 @@ Function ResolveProjectedIntentV03( _
     nodes As List(Of NodeRecord), _
     anchor As AutoDimAnchorV01) As GeometryIntent
 
-    ' 1) Preferred path: a semantic topology point that is a real model
-    '    port/face is dimensioned directly to its projected DrawingCurve.
+    ' V0.3.1 SAFE MODE
+    ' Only resolve topology anchors that coincide with a real component port.
+    ' Then inspect that occurrence's ACTUAL projected DrawingCurves and select
+    ' the curve closest to the expected projected semantic point.
+    '
+    ' No automated centerlines, no AddBisector and no global view-curve snap.
+    ' Theoretical tee/elbow centres are intentionally unresolved in this test.
+
     Dim port As PortRecord = _
         FindPortAtModelPointV03( _
             nodes, anchor.X, anchor.Y, anchor.Z, 0.6)
 
-    If port IsNot Nothing AndAlso port.ModelFace IsNot Nothing Then
-        Dim faceIntent As GeometryIntent = _
-            FindFaceDrawingIntentV03( _
-                sheet, view, port.ModelFace, anchor.SheetPoint)
+    If port Is Nothing OrElse _
+       port.Owner Is Nothing OrElse _
+       port.Owner.Occurrence Is Nothing Then
+        Return Nothing
+    End If
 
-        If faceIntent IsNot Nothing Then
-            anchor.SourceDescription = _
-                port.Owner.Code & " FACE " & port.FaceIndex.ToString()
-            Return faceIntent
+    Dim projectedIntent As GeometryIntent = _
+        FindOccurrenceDrawingIntentV031( _
+            sheet, _
+            view, _
+            port.Owner.Occurrence, _
+            anchor.SheetPoint)
+
+    If projectedIntent IsNot Nothing Then
+        anchor.SourceDescription = _
+            port.Owner.Code & " PROJECTED CURVE NEAR FACE " & _
+            port.FaceIndex.ToString()
+    End If
+
+    Return projectedIntent
+End Function
+
+
+Function FindOccurrenceDrawingIntentV031( _
+    sheet As Sheet, _
+    view As DrawingView, _
+    occurrence As ComponentOccurrence, _
+    target As Point2d) As GeometryIntent
+
+    If occurrence Is Nothing OrElse target Is Nothing Then Return Nothing
+
+    Try
+        Dim curves As DrawingCurvesEnumerator = _
+            view.DrawingCurves(occurrence)
+
+        If curves Is Nothing OrElse curves.Count = 0 Then Return Nothing
+
+        Dim best As DrawingCurve = Nothing
+        Dim bestDistance As Double = 0.18
+
+        For Each c As DrawingCurve In curves
+            Dim d As Double = DrawingCurveDistanceV03(c, target)
+            If d <= bestDistance Then
+                bestDistance = d
+                best = c
+            End If
+        Next
+
+        If best Is Nothing Then Return Nothing
+
+        ' Prefer the actual projected line itself for end-face dimensions.
+        If best.CurveType = CurveTypeEnum.kLineSegmentCurve Then
+            Return sheet.CreateGeometryIntent(best)
         End If
-    End If
 
-    ' 2) Theoretical fitting centres (tee/elbow) are referenced through
-    '    true Inventor Centerline objects made from projected view geometry.
-    Dim refNode As NodeRecord = _
-        FindReferenceNodeAtPointV03( _
-            nodes, anchor.X, anchor.Y, anchor.Z, 0.8)
+        ' If a circular face is viewed normal-on, its centre is the semantic
+        ' axis location and is a valid drawing-curve intent.
+        If best.CurveType = CurveTypeEnum.kCircleCurve OrElse _
+           best.CurveType = CurveTypeEnum.kCircularArcCurve OrElse _
+           best.CurveType = CurveTypeEnum.kEllipseFullCurve OrElse _
+           best.CurveType = CurveTypeEnum.kEllipticalArcCurve Then
 
-    If refNode IsNot Nothing Then
-        EnsureBisectorCenterlinesForNodeV03( _
-            sheet, view, refNode, anchor.SheetPoint)
-
-        Dim centreIntent As GeometryIntent = _
-            FindCenterlineIntentAtPointV03( _
-                sheet, view, anchor.SheetPoint)
-
-        If centreIntent IsNot Nothing Then
-            anchor.SourceDescription = refNode.Code & " CENTERLINE"
-            Return centreIntent
+            Return _
+                sheet.CreateGeometryIntent( _
+                    best, _
+                    PointIntentEnum.kCenterPointIntent)
         End If
-    End If
 
-    ' 3) Attachment axis intersections normally land on native centre lines.
-    Dim anyCenterIntent As GeometryIntent = _
-        FindCenterlineIntentAtPointV03( _
-            sheet, view, anchor.SheetPoint)
+        Return Nothing
 
-    If anyCenterIntent IsNot Nothing Then
-        anchor.SourceDescription = "PROJECTED CENTERLINE"
-        Return anyCenterIntent
-    End If
-
-    ' 4) Attachment bases lie on the visible cylindrical silhouette rather
-    '    than on a planar port face.  Snap only when a real drawing curve is
-    '    very close to the semantic projected point.
-    Dim nearCurve As GeometryIntent = _
-        FindNearestViewCurveIntentV03( _
-            sheet, view, anchor.SheetPoint, 0.12)
-
-    If nearCurve IsNot Nothing Then
-        anchor.SourceDescription = "PROJECTED VIEW CURVE"
-        Return nearCurve
-    End If
-
-    Return Nothing
+    Catch ex As Exception
+        Logger.Error( _
+            "Safe DrawingCurves(occurrence) resolve failed for " & _
+            occurrence.Name & ": " & ex.Message)
+        Return Nothing
+    End Try
 End Function
 
 
@@ -5624,52 +5645,18 @@ Function CreateChainDimensionsV01( _
     sheet As Sheet, _
     requests As List(Of AutoChainRequestV01)) As Integer
 
+    ' V0.3.1 SAFE MODE:
+    ' First prove that dimensions attached directly to real projected curves
+    ' are stable. Native ChainDimensionSet creation is deliberately disabled
+    ' for this build and will be re-enabled after this test succeeds.
+
     Dim created As Integer = 0
 
     For Each request As AutoChainRequestV01 In requests
-
-        If request.Anchors.Count < 2 Then Continue For
-
-        Try
-            Dim intents As ObjectCollection = _
-                ThisApplication.TransientObjects.CreateObjectCollection()
-
-            For Each anchor As AutoDimAnchorV01 In request.Anchors
-                If anchor.Intent IsNot Nothing Then
-                    intents.Add(anchor.Intent)
-                End If
-            Next
-
-            If intents.Count < 2 Then Continue For
-
-            Dim dimSet As ChainDimensionSet = _
-                sheet.DrawingDimensions.ChainDimensionSets.Add( _
-                    intents, _
-                    request.PlacementPoint, _
-                    request.DimensionType)
-
-            Try
-                dimSet.Precision = 0
-            Catch
-            End Try
-
-            TagAutoObjectV01(dimSet)
-            created += 1
-
-        Catch ex As Exception
-            Logger.Error( _
-                "Chain dimension set failed for " & _
-                request.Name & _
-                ": " & _
-                ex.Message & _
-                " | attempting individual fallback")
-
-            created += _
-                CreateIndividualChainFallbackV02( _
-                    sheet, _
-                    request)
-        End Try
-
+        created += _
+            CreateIndividualChainFallbackV02( _
+                sheet, _
+                request)
     Next
 
     Return created

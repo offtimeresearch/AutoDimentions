@@ -194,7 +194,7 @@ Sub Main()
                 chainRequests)
 
         Dim attachmentCount As Integer = 0
-        Logger.Info("V0.7: projected-curve chains enabled; fitting centers use ONE existing perpendicular centerline; attachment dimensions remain deferred.")
+        Logger.Info("V0.7.1: fitting centers use ONE existing centerline as an infinite directional datum; attachment dimensions remain deferred.")
 
 
         drawDoc.Update2(True)
@@ -206,13 +206,13 @@ Sub Main()
             "Chain dimension sets / fallback dims: " & chainCount.ToString() & vbCrLf & _
             "Overall dimensions: " & overallCount.ToString() & vbCrLf & _
             "Attachment dimensions/sets: " & attachmentCount.ToString(), _
-            "DimensionGenerator V0.7")
+            "DimensionGenerator V0.7.1")
 
 
     Catch ex As Exception
 
         MessageBox.Show( _
-            "DimensionGenerator V0.7 failed:" & vbCrLf & vbCrLf & _
+            "DimensionGenerator V0.7.1 failed:" & vbCrLf & vbCrLf & _
             ex.Message, _
             "Auto Dimensions")
 
@@ -4700,7 +4700,7 @@ End Function
 
 
 ' ===================================================================
-' DIMENSION GENERATOR V0.7 - DIRECTIONAL CENTERLINE DATUMS + SAFE CHAINS
+' DIMENSION GENERATOR V0.7.1 - EXTENDED DIRECTIONAL CENTERLINE DATUMS
 ' ===================================================================
 
 Function GetTargetDrawingViewV01( _
@@ -5387,10 +5387,33 @@ Function FindDirectionalCenterlineDatumV07( _
 
     If sheet Is Nothing OrElse target Is Nothing Then Return Nothing
 
-    Dim best As Centerline = Nothing
-    Dim bestScore As Double = Double.MaxValue
+    ' V0.7.1 IMPORTANT:
+    ' A PIPE / FLANGE centerline is normally only a short finite drawing
+    ' object.  The TEE / ELBOW center can lie well beyond its visible ends.
+    ' Therefore DO NOT test whether the target lies on the finite segment.
+    '
+    ' For a horizontal dimension we only need the X coordinate supplied by a
+    ' vertical axis.  For a vertical dimension we only need the Y coordinate
+    ' supplied by a horizontal axis.  Extend each candidate mathematically to
+    ' the target Y/X and compare that ONE coordinate.
+
+    Dim bestTagged As Centerline = Nothing
+    Dim bestTaggedError As Double = Double.MaxValue
+    Dim bestTaggedOrientation As Double = 0
+
+    Dim bestAny As Centerline = Nothing
+    Dim bestAnyError As Double = Double.MaxValue
+    Dim bestAnyOrientation As Double = 0
+
+    Dim directionalCandidates As Integer = 0
+    Dim taggedCandidates As Integer = 0
 
     Try
+        Logger.Info( _
+            "CENTER_DATUM_SCAN total centerlines=" & _
+            sheet.Centerlines.Count.ToString() & _
+            " | need=" & If(wantVerticalAxis, "VERTICAL/X", "HORIZONTAL/Y"))
+
         For i As Integer = 1 To sheet.Centerlines.Count
 
             Dim cl As Centerline = sheet.Centerlines.Item(i)
@@ -5423,41 +5446,122 @@ Function FindDirectionalCenterlineDatumV07( _
                 orientation = Math.Abs(ux)
             End If
 
-            ' Horizontal dimensions need a near-vertical datum; vertical
-            ' dimensions need a near-horizontal datum.
-            If orientation < 0.96 Then Continue For
+            ' Deliberately tolerant of tiny drawing-view skew.  We score the
+            ' remaining orientation error instead of requiring perfect H/V.
+            If orientation < 0.90 Then Continue For
 
-            Dim axisDistance As Double = _
-                DistancePointToInfiniteLineV03(target, a, b)
+            Dim coordinateError As Double = Double.MaxValue
 
-            ' 0.18 cm = 1.8 mm on the sheet.  The topology-projected fitting
-            ' centre should lie essentially on the correct pipe/flange axis.
-            If axisDistance > 0.18 Then Continue For
+            If wantVerticalAxis Then
+                If Math.Abs(dy) < 0.000001 Then Continue For
 
-            Dim tagBonus As Double = 0
+                Dim xAtTargetY As Double = _
+                    a.X + (target.Y - a.Y) * dx / dy
+
+                coordinateError = Math.Abs(xAtTargetY - target.X)
+            Else
+                If Math.Abs(dx) < 0.000001 Then Continue For
+
+                Dim yAtTargetX As Double = _
+                    a.Y + (target.X - a.X) * dy / dx
+
+                coordinateError = Math.Abs(yAtTargetX - target.Y)
+            End If
+
+            directionalCandidates += 1
+
+            Dim isGenerated As Boolean = False
+            Dim ownerText As String = "UNTAGGED"
+
             Try
                 Dim tags As AttributeSet = _
                     cl.AttributeSets.Item("AutoSpoolCenterline")
-                If tags IsNot Nothing Then tagBonus = -0.02
+
+                If tags IsNot Nothing Then
+                    isGenerated = True
+                    taggedCandidates += 1
+
+                    Try
+                        ownerText = _
+                            tags.Item("ComponentType").Value.ToString() & ":" & _
+                            tags.Item("Occurrence").Value.ToString()
+                    Catch
+                        ownerText = "TAGGED"
+                    End Try
+                End If
             Catch
             End Try
 
-            Dim score As Double = _
-                axisDistance + _
-                (1.0 - orientation) * 0.20 + _
-                tagBonus
+            If isGenerated Then
+                Logger.Info( _
+                    "CENTER_DATUM_CANDIDATE " & ownerText & _
+                    " | need=" & If(wantVerticalAxis, "VERTICAL/X", "HORIZONTAL/Y") & _
+                    " | coordinateError_cm=" & Num(coordinateError) & _
+                    " | orientation=" & Num(orientation))
 
-            If best Is Nothing OrElse score < bestScore Then
-                best = cl
-                bestScore = score
+                If coordinateError < bestTaggedError OrElse _
+                   (Math.Abs(coordinateError - bestTaggedError) < 0.000001 AndAlso _
+                    orientation > bestTaggedOrientation) Then
+
+                    bestTagged = cl
+                    bestTaggedError = coordinateError
+                    bestTaggedOrientation = orientation
+                End If
+            End If
+
+            If coordinateError < bestAnyError OrElse _
+               (Math.Abs(coordinateError - bestAnyError) < 0.000001 AndAlso _
+                orientation > bestAnyOrientation) Then
+
+                bestAny = cl
+                bestAnyError = coordinateError
+                bestAnyOrientation = orientation
             End If
         Next
+
     Catch ex As Exception
         Logger.Error("CENTER_DATUM centerline scan failed: " & ex.Message)
         Return Nothing
     End Try
 
-    Return best
+    Dim chosen As Centerline = Nothing
+    Dim chosenError As Double = Double.MaxValue
+    Dim sourceText As String = "NONE"
+
+    ' Prefer centerlines created by CenterlineGenerator V0.2.  They belong to
+    ' this spool and are much safer than arbitrary manually-created centerlines.
+    If bestTagged IsNot Nothing Then
+        chosen = bestTagged
+        chosenError = bestTaggedError
+        sourceText = "AutoSpoolCenterline"
+    ElseIf bestAny IsNot Nothing Then
+        chosen = bestAny
+        chosenError = bestAnyError
+        sourceText = "sheet fallback"
+    End If
+
+    Logger.Info( _
+        "CENTER_DATUM_SCAN result" & _
+        " | need=" & If(wantVerticalAxis, "VERTICAL/X", "HORIZONTAL/Y") & _
+        " | directional=" & directionalCandidates.ToString() & _
+        " | tagged=" & taggedCandidates.ToString() & _
+        " | source=" & sourceText & _
+        " | bestCoordinateError_cm=" & _
+        If(chosen Is Nothing, "NONE", Num(chosenError)))
+
+    If chosen Is Nothing Then Return Nothing
+
+    ' Sanity guard only.  The correct generated axis should normally be nearly
+    ' zero error.  0.75 cm on the sheet is intentionally generous enough for
+    ' projection/rounding variation while still rejecting a clearly wrong axis.
+    If chosenError > 0.75 Then
+        Logger.Error( _
+            "CENTER_DATUM rejected nearest directional axis because coordinate error is " & _
+            Num(chosenError) & " cm")
+        Return Nothing
+    End If
+
+    Return chosen
 End Function
 
 

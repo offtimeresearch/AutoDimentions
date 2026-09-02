@@ -1,0 +1,48 @@
+name: Fix Attachment DimensionType V0.9.1
+
+on:
+  push:
+    paths:
+      - 'tools/fix_attachment_dimensiontype_v091.py'
+      - '.github/workflows/fix-attachment-dimensiontype-v091.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply V0.9.1 compile fix
+        run: python3 tools/fix_attachment_dimensiontype_v091.py
+
+      - name: Validate iLogic source
+        run: python3 tools/validate_ilogic.py TopologyExtractor.vb
+
+      - name: Assert invalid member is gone
+        shell: bash
+        run: |
+          if grep -n 'd\.ConnectionType' TopologyExtractor.vb; then
+            echo 'Invalid DimensionRecord.ConnectionType reference remains.'
+            exit 1
+          fi
+
+      - name: Commit patched source
+        shell: bash
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add TopologyExtractor.vb
+          if git diff --cached --quiet; then
+            echo "No source changes required."
+            exit 0
+          fi
+          git commit -m "Fix attachment DimensionRecord field V0.9.1"
+          git push origin HEAD:main

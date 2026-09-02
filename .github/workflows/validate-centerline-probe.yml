@@ -1,0 +1,20 @@
+name: Validate CenterlineProbe
+
+on:
+  push:
+    paths:
+      - 'CenterlineProbe.vb'
+      - '.github/workflows/validate-centerline-probe.yml'
+      - 'tools/validate_ilogic.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate CenterlineProbe
+        run: python3 tools/validate_ilogic.py CenterlineProbe.vb

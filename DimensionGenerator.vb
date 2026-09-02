@@ -226,7 +226,7 @@ Sub Main()
                 nodes)
 
         Dim attachmentCount As Integer = 0
-        Logger.Info("V0.9: native physical chain sets + reference fitting dimensions + cleaned dimension tiers; attachments deferred.")
+        Logger.Info("V0.10: true Inventor reference dimensions + explicit drawing-view selection + increased annotation spacing; attachments deferred.")
 
 
         drawDoc.Update2(True)
@@ -238,13 +238,13 @@ Sub Main()
             "Chain dimension sets / fallback dims: " & chainCount.ToString() & vbCrLf & _
             "Overall dimensions: " & overallCount.ToString() & vbCrLf & _
             "Attachment dimensions/sets: " & attachmentCount.ToString(), _
-            "DimensionGenerator V0.9")
+            "DimensionGenerator V0.10")
 
 
     Catch ex As Exception
 
         MessageBox.Show( _
-            "DimensionGenerator V0.9 failed:" & vbCrLf & vbCrLf & _
+            "DimensionGenerator V0.10 failed:" & vbCrLf & vbCrLf & _
             ex.Message, _
             "Auto Dimensions")
 
@@ -4739,26 +4739,75 @@ Function GetTargetDrawingViewV01( _
     drawDoc As DrawingDocument, _
     sheet As Sheet) As DrawingView
 
+    If drawDoc Is Nothing OrElse sheet Is Nothing Then Return Nothing
+
+    ' ---------------------------------------------------------------
+    ' Preferred workflow: preselect the view, then run the rule.
+    ' ---------------------------------------------------------------
     Try
-        For Each selected As Object In drawDoc.SelectSet
+        Dim selectedView As DrawingView = Nothing
+        Dim selectedCount As Integer = 0
 
-            If TypeOf selected Is DrawingView Then
-                Return CType(selected, DrawingView)
+        For Each selectedObject As Object In drawDoc.SelectSet
+            If TypeOf selectedObject Is DrawingView Then
+                Dim candidate As DrawingView = CType(selectedObject, DrawingView)
+
+                ' Accept only a view that belongs to the active sheet.
+                For i As Integer = 1 To sheet.DrawingViews.Count
+                    Dim sheetView As DrawingView = sheet.DrawingViews.Item(i)
+                    If sheetView.Name = candidate.Name Then
+                        selectedView = sheetView
+                        selectedCount += 1
+                        Exit For
+                    End If
+                Next
             End If
-
-            If TypeOf selected Is DrawingCurveSegment Then
-                Dim seg As DrawingCurveSegment = _
-                    CType(selected, DrawingCurveSegment)
-                Return seg.Parent.Parent
-            End If
-
         Next
-    Catch
+
+        If selectedCount = 1 AndAlso selectedView IsNot Nothing Then
+            Logger.Info("VIEW_PICKER preselected | " & selectedView.Name)
+            Return selectedView
+        End If
+    Catch ex As Exception
+        Logger.Info("VIEW_PICKER preselection check skipped | " & ex.Message)
     End Try
 
-    If sheet.DrawingViews.Count > 0 Then
+    If sheet.DrawingViews.Count = 0 Then Return Nothing
+
+    If sheet.DrawingViews.Count = 1 Then
+        Logger.Info("VIEW_PICKER single view | " & sheet.DrawingViews.Item(1).Name)
         Return sheet.DrawingViews.Item(1)
     End If
+
+    Dim labels As New System.Collections.ArrayList
+
+    For i As Integer = 1 To sheet.DrawingViews.Count
+        Dim v As DrawingView = sheet.DrawingViews.Item(i)
+        labels.Add(v.Name)
+    Next
+
+    Dim choice As Object = _
+        InputListBox( _
+            "Select the drawing view to auto-dimension.", _
+            labels, _
+            labels.Item(0), _
+            "Auto Dimensions - Select View", _
+            "Drawing View")
+
+    If choice Is Nothing Then
+        Logger.Info("VIEW_PICKER cancelled")
+        Return Nothing
+    End If
+
+    Dim selectedName As String = CStr(choice)
+
+    For i As Integer = 1 To sheet.DrawingViews.Count
+        Dim v As DrawingView = sheet.DrawingViews.Item(i)
+        If v.Name = selectedName Then
+            Logger.Info("VIEW_PICKER chosen | " & v.Name)
+            Return v
+        End If
+    Next
 
     Return Nothing
 End Function
@@ -4898,23 +4947,23 @@ Function BuildChainRequestsV01( _
             request.PlacementPoint = _
                 ThisApplication.TransientGeometry.CreatePoint2d( _
                     (firstAnchor.SheetPoint.X + lastAnchor.SheetPoint.X) / 2.0, _
-                    bottomY - 0.65)
+                    bottomY - 1.00)
 
             request.OverallPlacementPoint = _
                 ThisApplication.TransientGeometry.CreatePoint2d( _
                     request.PlacementPoint.X, _
-                    bottomY - 1.35)
+                    bottomY - 1.85)
 
         ElseIf request.DimensionType = DimensionTypeEnum.kVerticalDimensionType Then
             ' All partial vertical dimensions share one inner tier.
             request.PlacementPoint = _
                 ThisApplication.TransientGeometry.CreatePoint2d( _
-                    rightX + 0.65, _
+                    rightX + 1.00, _
                     (firstAnchor.SheetPoint.Y + lastAnchor.SheetPoint.Y) / 2.0)
 
             request.OverallPlacementPoint = _
                 ThisApplication.TransientGeometry.CreatePoint2d( _
-                    rightX + 1.40, _
+                    rightX + 1.85, _
                     request.PlacementPoint.Y)
 
         Else
@@ -4932,7 +4981,7 @@ Function BuildChainRequestsV01( _
 
             Dim nx As Double = -dy / length2d
             Dim ny As Double = dx / length2d
-            Dim offset As Double = 0.85 + (alignedLevel - 1) * 0.60
+            Dim offset As Double = 1.15 + (alignedLevel - 1) * 0.75
 
             request.PlacementPoint = _
                 ThisApplication.TransientGeometry.CreatePoint2d( _
@@ -4941,8 +4990,8 @@ Function BuildChainRequestsV01( _
 
             request.OverallPlacementPoint = _
                 ThisApplication.TransientGeometry.CreatePoint2d( _
-                    midX + nx * (offset + 0.70), _
-                    midY + ny * (offset + 0.70))
+                    midX + nx * (offset + 0.85), _
+                    midY + ny * (offset + 0.85))
         End If
 
         result.Add(request)
@@ -7882,16 +7931,11 @@ Function IsReferencePairV09( _
 End Function
 
 
-Sub ApplyReferenceDisplayV09(dimObj As LinearGeneralDimension)
+Sub ApplyReferenceDisplayV09(dimObj As GeneralDimension)
     If dimObj Is Nothing Then Exit Sub
 
     Try
-        Dim ft As String = dimObj.Text.FormattedText
-        If String.IsNullOrEmpty(ft) Then Exit Sub
-
-        If Not ft.TrimStart().StartsWith("(") Then
-            dimObj.Text.FormattedText = "(" & ft & ")"
-        End If
+        dimObj.Tolerance.SetToReference()
 
         Try
             If Not dimObj.AttributeSets.NameIsUsed("AutoReferenceDimension") Then
@@ -7899,8 +7943,11 @@ Sub ApplyReferenceDisplayV09(dimObj As LinearGeneralDimension)
             End If
         Catch
         End Try
+
+        Logger.Info("REFERENCE_DIM true reference applied")
+
     Catch ex As Exception
-        Logger.Error("Reference display formatting failed: " & ex.Message)
+        Logger.Error("Reference SetToReference failed: " & ex.Message)
     End Try
 End Sub
 

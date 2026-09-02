@@ -58,16 +58,20 @@ for i, line in enumerate(lines, 1):
     if re.match(r"\s*Imports\s+System\.IO\b", line, re.I):
         err(i, "Do not import System.IO in this rule; use System.IO.Path/File explicitly to avoid Inventor name ambiguity.")
 
-patterns = [
-    (r"^\s*Sub\s+(?!Main\b)", r"^\s*End\s+Sub\s*$", "Sub"),
-    (r"^\s*Function\s+", r"^\s*End\s+Function\s*$", "Function"),
-    (r"^\s*Class\s+", r"^\s*End\s+Class\s*$", "Class"),
+# VB declarations can have modifiers (Public/Private/Shared/etc.).
+mods = r"(?:(?:Public|Private|Friend|Protected|Shared|Static|Overloads|Overrides|Overridable|NotOverridable|MustOverride|Shadows|Async|Iterator|Partial)\s+)*"
+sub_start = re.compile(r"^\s*" + mods + r"Sub\s+(?:New|[A-Za-z_]\w*)\b", re.I)
+fun_start = re.compile(r"^\s*" + mods + r"Function\s+[A-Za-z_]\w*\b", re.I)
+class_start = re.compile(r"^\s*" + mods + r"Class\s+[A-Za-z_]\w*\b", re.I)
+
+block_specs = [
+    (sub_start, re.compile(r"^\s*End\s+Sub\s*$", re.I), "Sub"),
+    (fun_start, re.compile(r"^\s*End\s+Function\s*$", re.I), "Function"),
+    (class_start, re.compile(r"^\s*End\s+Class\s*$", re.I), "Class"),
 ]
-for start_pat, end_pat, name in patterns:
-    starts = sum(1 for l in lines if re.match(start_pat, l, re.I))
-    ends = sum(1 for l in lines if re.match(end_pat, l, re.I))
-    if name == "Sub":
-        starts += 1 if main_line is not None else 0
+for start_rx, end_rx, name in block_specs:
+    starts = sum(1 for l in lines if start_rx.match(l) and not re.match(r"^\s*End\b", l, re.I))
+    ends = sum(1 for l in lines if end_rx.match(l))
     if starts != ends:
         err(1, f"Unbalanced {name} blocks: starts={starts}, ends={ends}.")
 

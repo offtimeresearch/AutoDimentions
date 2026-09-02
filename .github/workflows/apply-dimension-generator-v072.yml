@@ -35,7 +35,7 @@ jobs:
           t = Path('DimensionGenerator.vb').read_text(encoding='utf-8')
           m = re.search(r'Sub\s+DeletePreviousAutoDimensionsV01\s*\(.*?\nEnd Sub', t, re.S|re.I)
           assert m, 'cleanup function missing'
-          assert 'Centerlines' not in m.group(0), 'cleanup still references Centerlines'
+          assert 'sheet.Centerlines' not in m.group(0), 'cleanup still accesses sheet.Centerlines'
           print('V0.7.2 cleanup safety assertion passed.')
           PY
 

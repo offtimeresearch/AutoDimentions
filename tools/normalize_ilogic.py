@@ -2,7 +2,7 @@
 from pathlib import Path
 import sys
 
-src = Path(sys.argv[1] if len(sys.argv) > 1 else "Topology Extractor.iLogicVb")
+src = Path(sys.argv[1] if len(sys.argv) > 1 else "TopologyExtractor.vb")
 raw = src.read_bytes()
 changed = False
 

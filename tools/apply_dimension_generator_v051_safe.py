@@ -45,5 +45,6 @@ s = s[:start] + new_func + s[end:]
 s = s.replace('V0.4 staged mode: attachment dimensions remain deferred until normal spool chains/centerlines are verified.',
               'V0.5.1 stable mode: chains enabled; centerline-dependent and attachment dimensions deferred.')
 
+# trigger workflow after workflow file exists
 p.write_text(s, encoding='utf-8', newline='\n')
 print('Patched DimensionGenerator.vb to V0.5.1 stable projected-curves + chains')

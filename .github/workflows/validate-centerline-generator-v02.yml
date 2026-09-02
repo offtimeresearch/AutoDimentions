@@ -1,0 +1,31 @@
+name: Validate CenterlineGenerator V0.2
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'CenterlineGenerator.vb'
+      - 'tools/validate_ilogic.py'
+      - '.github/workflows/validate-centerline-generator-v02.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate CenterlineGenerator
+        run: python tools/validate_ilogic.py CenterlineGenerator.vb
+      - name: Confirm unsafe APIs are absent
+        run: |
+          if grep -q 'AddBisector' CenterlineGenerator.vb; then
+            echo 'ERROR: AddBisector still exists in CenterlineGenerator.vb'
+            exit 1
+          fi
+          if grep -q 'CreateGeometryIntent(.*Centerline' CenterlineGenerator.vb; then
+            echo 'WARNING: review centerline intent usage'
+          fi
+          echo 'CenterlineGenerator V0.2 safety checks passed.'

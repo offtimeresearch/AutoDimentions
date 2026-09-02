@@ -1,0 +1,58 @@
+name: Apply DimensionGenerator V0.11 Vertical Chain
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'tools/patch_dimension_generator_v011_vertical_chain_reference_fix.py'
+      - '.github/workflows/apply-dimension-generator-v011-vertical-chain.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Patch DimensionGenerator
+        run: python tools/patch_dimension_generator_v011_vertical_chain_reference_fix.py
+
+      - name: Validate DimensionGenerator
+        run: python tools/validate_ilogic.py DimensionGenerator.vb
+
+      - name: V0.11 safety assertions
+        run: |
+          grep -q 'DimensionGenerator V0.11' DimensionGenerator.vb
+          grep -q 'GLOBAL_VERTICAL_CHAIN planned' DimensionGenerator.vb
+          grep -q 'GLOBAL_VERTICAL_CHAIN created' DimensionGenerator.vb
+          grep -q 'REFERENCE_MEMBER matched geometry' DimensionGenerator.vb
+          grep -q 'Tolerance.SetToReference' DimensionGenerator.vb
+          grep -q 'rightX + 2.55' DimensionGenerator.vb
+          python - <<'PY'
+          from pathlib import Path
+          t = Path('DimensionGenerator.vb').read_text(encoding='utf-8')
+          assert 'dimSet.Members.Item(m))' not in t[t.index('Function CreatePhysicalChainGroupV09'):t.index('Function CreateIntervalDimensionV09')], 'old positional reference-member mapping still present'
+          assert 'CreateGeometryIntent( _\n                                near.Item(i), _\n                                near.Item(j))' in t, 'historical dead code unexpectedly changed; review required'
+          s = t.index('Function CreateFullDirectionalChainV011')
+          e = t.index('Sub ApplyReferenceMembersByGeometryV011', s)
+          block = t[s:e]
+          assert 'ChainDimensionSets.Add' in block
+          assert 'ResolveAnchorIntentForDimensionV07' in block
+          assert 'AddBisector' not in block
+          print('V0.11 vertical-chain/reference assertions passed.')
+          PY
+
+      - name: Commit V0.11 generator
+        run: |
+          if git diff --quiet -- DimensionGenerator.vb; then
+            echo 'DimensionGenerator.vb already patched.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add DimensionGenerator.vb
+          git commit -m 'Fix vertical chain reference mapping and spacing V0.11'
+          git push

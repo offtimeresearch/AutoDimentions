@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Static validator for the Inventor iLogic source. This does not replace an Inventor compile.
 import re
 import sys
 from pathlib import Path
@@ -40,13 +41,11 @@ for i, line in enumerate(lines, 1):
 if main_line is None:
     err(1, "Sub Main() not found.")
 else:
-    # Before Sub Main, only iLogic/VB header directives, blank lines and comments are allowed.
     allowed = re.compile(r"^\s*(?:$|'|Imports\b|AddReference\b|Option\b|AddVbRule\b|AddVbFile\b|AddResources\b)", re.I)
     for i, line in enumerate(lines[: main_line - 1], 1):
         if not allowed.match(line):
             err(i, "Unexpected declaration/statement before Sub Main(); this can make later Imports invalid in iLogic.")
 
-# Imports must be in the header, not after declarations begin.
 if main_line is not None:
     for i, line in enumerate(lines[main_line:], main_line + 1):
         if re.match(r"^\s*Imports\b", line, re.I):
@@ -55,12 +54,10 @@ if main_line is not None:
 if "AUTOSPOOL - SINGLE SPOOL TOPOLOGY / DIMENSION VERIFIER V0.4" not in text:
     warn(1, "Expected V0.4 source marker not found.")
 
-# Known iLogic troublemakers from earlier iterations.
 for i, line in enumerate(lines, 1):
     if re.match(r"\s*Imports\s+System\.IO\b", line, re.I):
         err(i, "Do not import System.IO in this rule; use System.IO.Path/File explicitly to avoid Inventor name ambiguity.")
 
-# Crude block-balance checks. These are not a full VB compiler, but catch truncation/editing mistakes.
 patterns = [
     (r"^\s*Sub\s+(?!Main\b)", r"^\s*End\s+Sub\s*$", "Sub"),
     (r"^\s*Function\s+", r"^\s*End\s+Function\s*$", "Function"),
@@ -70,12 +67,10 @@ for start_pat, end_pat, name in patterns:
     starts = sum(1 for l in lines if re.match(start_pat, l, re.I))
     ends = sum(1 for l in lines if re.match(end_pat, l, re.I))
     if name == "Sub":
-        # Include Main in total End Sub count comparison.
         starts += 1 if main_line is not None else 0
     if starts != ends:
         err(1, f"Unbalanced {name} blocks: starts={starts}, ends={ends}.")
 
-# Parenthesis sanity after stripping comments and quoted strings approximately.
 def strip_strings_and_comments(line):
     out = []
     i = 0

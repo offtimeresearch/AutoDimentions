@@ -324,9 +324,31 @@
   (reverse out)
 )
 
-(defun gtp:model-arc (center t1 normal tangent radius phi dia layer / obj)
-  (setq obj (gtp:sweep-arc center t1 normal tangent radius phi dia layer))
-  (if obj (list obj) (gtp:segmented-arc center t1 normal radius phi dia layer))
+(defun gtp:model-arc (center t1 normal tangent radius phi dia layer / obj fallback)
+  ; Protect the COMPLETE native sweep operation.  AutoCAD can reject either
+  ; the temporary arc/profile construction or the final path sweep depending
+  ; on drawing units and the orientation of a 3D bend.
+  (setq obj
+    (vl-catch-all-apply
+      'gtp:sweep-arc
+      (list center t1 normal tangent radius phi dia layer)
+    )
+  )
+  (if (and obj (not (vl-catch-all-error-p obj)))
+    (list obj)
+    (progn
+      ; Keep GTPPIPE running when the ActiveX sweep is unavailable.  The
+      ; fallback is deliberately caught too, so one bad bend cannot cancel
+      ; all otherwise-valid straight pipe solids.
+      (setq fallback
+        (vl-catch-all-apply
+          'gtp:segmented-arc
+          (list center t1 normal radius phi dia layer)
+        )
+      )
+      (if (vl-catch-all-error-p fallback) nil fallback)
+    )
+  )
 )
 
 ; -----------------------------------------------------------------------------

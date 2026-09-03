@@ -1,6 +1,6 @@
 ; GTP_DH_TOOLKIT.LSP
 ; Permanent AutoLISP toolkit for AutoCAD / AutoCAD Mechanical
-; ONE FILE ONLY - contains GTPPIPE and GTPMITER.
+; ONE FILE ONLY - update this file in place.
 ;
 ; Commands:
 ;   GTPPIPE   - Create Isoplus pre-insulated 3D pipe from a prepared route
@@ -8,17 +8,18 @@
 ;   GTPMITTER - Alias for GTPMITER
 ;   GTPUNITS  - Set/check catalogue-mm to drawing-unit conversion
 ;   GTPLAYER  - Create/check GTP layers
+;   GTPHELP   - Show loaded commands
 ;
 ; Route rule:
-;   GTPPIPE treats every interior polyline vertex as a theoretical bend corner.
-;   There is NO weld-point mode.
-;   Bend angle comes directly from the route geometry and can be any practical angle.
+;   GTPPIPE ignores duplicate and nearly-collinear intermediate route vertices.
+;   Only real direction changes are treated as bend corners.
+;   The original selected polyline is NOT modified.
+;   True straight runs are still split by catalogue stock length for real spool joints.
 
 (vl-load-com)
 
 ; -----------------------------------------------------------------------------
-; CATALOGUE DATA - mm
-; row = (DN carrierOD series1Casing series2Casing series3Casing)
+; CATALOGUE DATA - millimetres
 ; -----------------------------------------------------------------------------
 (setq *gtp-pipe-db*
   '(
@@ -57,6 +58,8 @@
 
 (setq *gtp-max-pipe-length-mm* 12000.0)
 (setq *gtp-end-cutback-mm* 220.0)
+(setq *gtp-straight-angle-tol-deg* 0.5)
+(setq *gtp-duplicate-point-tol* 1e-8)
 (setq *gtp-mm-to-du* 1.0)
 (setq *gtp-drawing-unit-name* "millimetres")
 
@@ -71,6 +74,10 @@
     ((= u 5)  (list "centimetres" 0.1))
     ((= u 6)  (list "metres" 0.001))
     ((= u 7)  (list "kilometres" 0.000001))
+    ((= u 10) (list "yards" (/ 1.0 914.4)))
+    ((= u 14) (list "decimetres" 0.01))
+    ((= u 15) (list "decametres" 0.0001))
+    ((= u 16) (list "hectometres" 0.00001))
     (T nil)
   )
 )
@@ -116,11 +123,7 @@
 )
 
 (defun gtp:mm (x) (* x *gtp-mm-to-du*))
-
-(defun c:GTPUNITS ()
-  (gtp:setup-units)
-  (princ)
-)
+(defun c:GTPUNITS () (gtp:setup-units) (princ))
 
 ; -----------------------------------------------------------------------------
 ; LAYERS
@@ -144,11 +147,7 @@
   (princ)
 )
 
-(defun c:GTPLAYER ()
-  (gtp:layers)
-  (princ "\nGTP layers ready.")
-  (princ)
-)
+(defun c:GTPLAYER () (gtp:layers) (princ "\nGTP layers ready.") (princ))
 
 ; -----------------------------------------------------------------------------
 ; VECTOR / GEOMETRY HELPERS
@@ -430,7 +429,7 @@
 
 (defun gtp:spec (key spec) (cdr (assoc key spec)))
 
-(defun gtp:model-elbow (spec carrier casing mode / r phi d1 d2 normal fs t1 center t2 fe cut cut1 cut2 cs ce obj)
+(defun gtp:model-elbow (spec carrier casing mode / r phi d1 d2 normal fs t1 center t2 fe cut cut1 cut2 cs ce)
   (setq r (gtp:spec 'radius spec))
   (setq phi (gtp:spec 'phi spec))
   (setq d1 (gtp:spec 'd1 spec))
@@ -451,6 +450,7 @@
   (setq cut2 (min cut (* 0.80 (distance t2 fe))))
   (setq cs (gtp:vadd fs (gtp:vscale d1 cut1)))
   (setq ce (gtp:vadd fe (gtp:vscale d2 (- cut2))))
+
   (gtp:make-cylinder cs t1 casing "GTP-PIPE-CASING")
   (gtp:model-arc center t1 normal d1 r phi casing "GTP-PIPE-CASING")
   (gtp:make-cylinder t2 ce casing "GTP-PIPE-CASING")
@@ -505,7 +505,7 @@
 )
 
 ; -----------------------------------------------------------------------------
-; ROUTE READING / CORNER MODELLING
+; ROUTE READING AND CLEANUP
 ; -----------------------------------------------------------------------------
 (defun gtp:curve-points (ename / endParam i p pts)
   (setq endParam (vl-catch-all-apply 'vlax-curve-getEndParam (list ename)))
@@ -523,6 +523,62 @@
   )
 )
 
+(defun gtp:remove-duplicate-route-points (pts / out lastp p)
+  (setq out '() lastp nil)
+  (foreach p pts
+    (if (or (null lastp) (> (distance lastp p) *gtp-duplicate-point-tol*))
+      (progn
+        (setq out (append out (list p)))
+        (setq lastp p)
+      )
+    )
+  )
+  out
+)
+
+(defun gtp:route-turn-angle-deg (a b c / u v cr dp)
+  (setq u (gtp:vunit (gtp:vsub b a)))
+  (setq v (gtp:vunit (gtp:vsub c b)))
+  (setq cr (gtp:vmag (gtp:cross u v)))
+  (setq dp (gtp:dot u v))
+  (gtp:rad->deg (atan cr dp))
+)
+
+(defun gtp:simplify-route-points (pts / originalCount cleaned duplicateRemoved n out i prev cur next ang straightRemoved)
+  (setq originalCount (length pts))
+  (setq cleaned (gtp:remove-duplicate-route-points pts))
+  (setq duplicateRemoved (- originalCount (length cleaned)))
+  (setq straightRemoved 0)
+
+  (if (<= (length cleaned) 2)
+    (list cleaned duplicateRemoved 0)
+    (progn
+      (setq n (length cleaned))
+      (setq out (list (car cleaned)))
+      (setq i 1)
+      (while (< i (1- n))
+        (setq prev (car (last out)))
+        (setq cur (nth i cleaned))
+        (setq next (nth (1+ i) cleaned))
+        (setq ang (gtp:route-turn-angle-deg prev cur next))
+
+        ; Remove only true/near-straight continuation points.
+        ; Reversals/U-turns are preserved.
+        (if (<= ang *gtp-straight-angle-tol-deg*)
+          (setq straightRemoved (1+ straightRemoved))
+          (setq out (append out (list cur)))
+        )
+        (setq i (1+ i))
+      )
+      (setq out (append out (list (car (last cleaned)))))
+      (list out duplicateRemoved straightRemoved)
+    )
+  )
+)
+
+; -----------------------------------------------------------------------------
+; CORNER ROUTE MODELLING
+; -----------------------------------------------------------------------------
 (defun gtp:model-corner-route (pts dn carrier casing mode style / n elbows i spec p1 p2 s e spoolCount elbowCount clippedCount)
   (setq n (length pts))
   (setq elbows '() i 0 spoolCount 0 elbowCount 0 clippedCount 0)
@@ -575,8 +631,9 @@
 ; =============================================================================
 ; COMMAND: GTPPIPE
 ; =============================================================================
-(defun c:GTPPIPE (/ *error* old ent typ row dn series carrierMM casingMM carrier casing mode style pts result)
+(defun c:GTPPIPE (/ *error* old ent typ row dn series carrierMM casingMM carrier casing mode style rawPts cleanInfo pts dupRemoved straightRemoved result)
   (vl-load-com)
+
   (defun *error* (msg)
     (if old (setvar "CMDECHO" old))
     (if (and msg (/= msg "Function cancelled") (/= msg "quit / exit abort"))
@@ -605,26 +662,54 @@
           (setq casing (gtp:mm casingMM))
           (setq mode (gtp:get-mode))
           (setq style (gtp:get-elbow-style))
-          (setq pts (gtp:curve-points ent))
 
-          (if (and pts (>= (length pts) 2))
+          (setq rawPts (gtp:curve-points ent))
+          (if (and rawPts (>= (length rawPts) 2))
             (progn
-              (setq result (gtp:model-corner-route pts dn carrier casing mode style))
+              (setq cleanInfo (gtp:simplify-route-points rawPts))
+              (setq pts (nth 0 cleanInfo))
+              (setq dupRemoved (nth 1 cleanInfo))
+              (setq straightRemoved (nth 2 cleanInfo))
+
               (princ
                 (strcat
-                  "\nCreated Isoplus DN" (itoa dn)
-                  " Series " (itoa series)
-                  " | " (itoa (nth 0 result)) " straight spool(s)"
-                  " | " (itoa (nth 1 result)) " 3D elbow(s)."
+                  "\nRoute cleanup: "
+                  (itoa (length rawPts)) " input vertex/vertices -> "
+                  (itoa (length pts)) " modelling vertex/vertices."
                 )
               )
-              (if (> (nth 2 result) 0)
+              (if (> (+ dupRemoved straightRemoved) 0)
                 (princ
                   (strcat
-                    "\nNote: " (itoa (nth 2 result))
-                    " elbow fitting leg(s) were shortened for available route length."
+                    " Ignored "
+                    (itoa dupRemoved) " duplicate and "
+                    (itoa straightRemoved)
+                    " nearly-collinear intermediate point(s)."
                   )
                 )
+              )
+
+              (if (>= (length pts) 2)
+                (progn
+                  (setq result (gtp:model-corner-route pts dn carrier casing mode style))
+                  (princ
+                    (strcat
+                      "\nCreated Isoplus DN" (itoa dn)
+                      " Series " (itoa series)
+                      " | " (itoa (nth 0 result)) " straight spool(s)"
+                      " | " (itoa (nth 1 result)) " 3D elbow(s)."
+                    )
+                  )
+                  (if (> (nth 2 result) 0)
+                    (princ
+                      (strcat
+                        "\nNote: " (itoa (nth 2 result))
+                        " elbow fitting leg(s) were shortened for available route length."
+                      )
+                    )
+                  )
+                )
+                (princ "\nRoute cleanup left fewer than two usable points.")
               )
             )
             (princ "\nCould not obtain route vertices.")
@@ -682,13 +767,23 @@
       (setq adj (cadr pts))
       (setq dir (gtp:vunit (gtp:vsub p0 adj)))
       (setq ordered (reverse pts))
-      (list (cons 'end p0) (cons 'dir dir) (cons 'ordered ordered) (cons 'len (distance p0 adj)))
+      (list
+        (cons 'end p0)
+        (cons 'dir dir)
+        (cons 'ordered ordered)
+        (cons 'len (distance p0 adj))
+      )
     )
     (progn
       (setq adj (nth (- (length pts) 2) pts))
       (setq dir (gtp:vunit (gtp:vsub pN adj)))
       (setq ordered pts)
-      (list (cons 'end pN) (cons 'dir dir) (cons 'ordered ordered) (cons 'len (distance pN adj)))
+      (list
+        (cons 'end pN)
+        (cons 'dir dir)
+        (cons 'ordered ordered)
+        (cons 'len (distance pN adj))
+      )
     )
   )
 )
@@ -703,6 +798,7 @@
   (setq d (gtp:dot u w))
   (setq e (gtp:dot v w))
   (setq den (- (* a c) (* b b)))
+
   (if (< (abs den) 1e-10)
     nil
     (progn
@@ -747,7 +843,13 @@
           )
         )
       )
-      (entmakex (list '(0 . "SEQEND") '(100 . "AcDbEntity") (cons 8 layer)))
+      (entmakex
+        (list
+          '(0 . "SEQEND")
+          '(100 . "AcDbEntity")
+          (cons 8 layer)
+        )
+      )
       head
     )
   )
@@ -765,6 +867,7 @@
 ; =============================================================================
 (defun c:GTPMITER (/ *error* old sel1 sel2 ent1 ent2 pick1 pick2 pts1 pts2 info1 info2 ll corner gap tol route newEnt ss ans)
   (vl-load-com)
+
   (defun *error* (msg)
     (if old (setvar "CMDECHO" old))
     (if (and msg (/= msg "Function cancelled") (/= msg "quit / exit abort"))
@@ -791,6 +894,7 @@
               (setq pick2 (trans (cadr sel2) 1 0))
               (setq pts1 (gtp:curve-points ent1))
               (setq pts2 (gtp:curve-points ent2))
+
               (if (and pts1 pts2 (>= (length pts1) 2) (>= (length pts2) 2))
                 (progn
                   (setq info1 (gtp:end-info pts1 pick1))
@@ -803,6 +907,7 @@
                       (cdr (assoc 'dir info2))
                     )
                   )
+
                   (if ll
                     (progn
                       (setq corner (cdr (assoc 'corner ll)))
@@ -810,13 +915,20 @@
                       (setq tol
                         (max
                           1e-7
-                          (* 0.002 (max (cdr (assoc 'len info1)) (cdr (assoc 'len info2))))
+                          (* 0.002
+                            (max
+                              (cdr (assoc 'len info1))
+                              (cdr (assoc 'len info2))
+                            )
+                          )
                         )
                       )
+
                       (if (<= gap tol)
                         (progn
                           (setq route (gtp:miter-route-points info1 info2 corner))
                           (setq newEnt (gtp:make-3d-polyline route "GTP-PIPE-CENTRELINE"))
+
                           (if newEnt
                             (progn
                               (princ
@@ -844,8 +956,7 @@
                         (princ
                           (strcat
                             "\nThe two selected axes are skew in 3D. Closest gap = "
-                            (rtos gap 2 6)
-                            "."
+                            (rtos gap 2 6) "."
                           )
                         )
                       )

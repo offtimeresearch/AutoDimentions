@@ -14,6 +14,7 @@
 ;   GTPPIPE ignores duplicate and nearly-collinear intermediate route vertices.
 ;   Only real direction changes are treated as bend corners.
 ;   The original selected polyline is NOT modified.
+;   Route cleanup is fail-safe: if cleanup fails, the original route is used.
 ;   True straight runs are still split by catalogue stock length for real spool joints.
 
 (vl-load-com)
@@ -136,6 +137,10 @@
     (setq lay (vla-Add lays name))
   )
   (if color (vla-put-Color lay color))
+  ; Make sure newly generated geometry cannot be hidden by a previous layer state.
+  (vl-catch-all-apply 'vla-put-LayerOn (list lay :vlax-true))
+  (vl-catch-all-apply 'vla-put-Freeze (list lay :vlax-false))
+  (vl-catch-all-apply 'vla-put-Lock (list lay :vlax-false))
   lay
 )
 
@@ -147,7 +152,7 @@
   (princ)
 )
 
-(defun c:GTPLAYER () (gtp:layers) (princ "\nGTP layers ready.") (princ))
+(defun c:GTPLAYER () (gtp:layers) (princ "\nGTP layers ready and visible.") (princ))
 
 ; -----------------------------------------------------------------------------
 ; VECTOR / GEOMETRY HELPERS
@@ -544,7 +549,7 @@
   (gtp:rad->deg (atan cr dp))
 )
 
-(defun gtp:simplify-route-points (pts / originalCount cleaned duplicateRemoved n out i prev cur next ang straightRemoved)
+(defun gtp:simplify-route-points (pts / originalCount cleaned duplicateRemoved n out i prev cur nxt ang straightRemoved)
   (setq originalCount (length pts))
   (setq cleaned (gtp:remove-duplicate-route-points pts))
   (setq duplicateRemoved (- originalCount (length cleaned)))
@@ -557,13 +562,13 @@
       (setq out (list (car cleaned)))
       (setq i 1)
       (while (< i (1- n))
-        (setq prev (car (last out)))
-        (setq cur (nth i cleaned))
-        (setq next (nth (1+ i) cleaned))
-        (setq ang (gtp:route-turn-angle-deg prev cur next))
+        ; Use the original adjacent triple. This is deliberately simple and
+        ; avoids allowing a previously removed point to affect later testing.
+        (setq prev (nth (1- i) cleaned))
+        (setq cur  (nth i cleaned))
+        (setq nxt  (nth (1+ i) cleaned))
+        (setq ang (gtp:route-turn-angle-deg prev cur nxt))
 
-        ; Remove only true/near-straight continuation points.
-        ; Reversals/U-turns are preserved.
         (if (<= ang *gtp-straight-angle-tol-deg*)
           (setq straightRemoved (1+ straightRemoved))
           (setq out (append out (list cur)))
@@ -573,6 +578,22 @@
       (setq out (append out (list (car (last cleaned)))))
       (list out duplicateRemoved straightRemoved)
     )
+  )
+)
+
+(defun gtp:safe-simplify-route-points (pts / r)
+  (setq r (vl-catch-all-apply 'gtp:simplify-route-points (list pts)))
+  (if (or
+        (vl-catch-all-error-p r)
+        (null r)
+        (null (car r))
+        (< (length (car r)) 2)
+      )
+    (progn
+      (princ "\nRoute cleanup warning: cleanup failed, so the original route vertices will be used.")
+      (list pts 0 0)
+    )
+    r
   )
 )
 
@@ -666,7 +687,7 @@
           (setq rawPts (gtp:curve-points ent))
           (if (and rawPts (>= (length rawPts) 2))
             (progn
-              (setq cleanInfo (gtp:simplify-route-points rawPts))
+              (setq cleanInfo (gtp:safe-simplify-route-points rawPts))
               (setq pts (nth 0 cleanInfo))
               (setq dupRemoved (nth 1 cleanInfo))
               (setq straightRemoved (nth 2 cleanInfo))
@@ -689,27 +710,27 @@
                 )
               )
 
-              (if (>= (length pts) 2)
-                (progn
-                  (setq result (gtp:model-corner-route pts dn carrier casing mode style))
-                  (princ
-                    (strcat
-                      "\nCreated Isoplus DN" (itoa dn)
-                      " Series " (itoa series)
-                      " | " (itoa (nth 0 result)) " straight spool(s)"
-                      " | " (itoa (nth 1 result)) " 3D elbow(s)."
-                    )
-                  )
-                  (if (> (nth 2 result) 0)
-                    (princ
-                      (strcat
-                        "\nNote: " (itoa (nth 2 result))
-                        " elbow fitting leg(s) were shortened for available route length."
-                      )
-                    )
+              (princ "\nGenerating 3D pipe...")
+              (setq result (gtp:model-corner-route pts dn carrier casing mode style))
+
+              (princ
+                (strcat
+                  "\nCreated Isoplus DN" (itoa dn)
+                  " Series " (itoa series)
+                  " | " (itoa (nth 0 result)) " straight spool(s)"
+                  " | " (itoa (nth 1 result)) " 3D elbow(s)."
+                )
+              )
+              (if (> (nth 2 result) 0)
+                (princ
+                  (strcat
+                    "\nNote: " (itoa (nth 2 result))
+                    " elbow fitting leg(s) were shortened for available route length."
                   )
                 )
-                (princ "\nRoute cleanup left fewer than two usable points.")
+              )
+              (if (and (= (nth 0 result) 0) (= (nth 1 result) 0))
+                (princ "\nWarning: no pipe solids were generated from this route. Check that the selected route has non-zero length.")
               )
             )
             (princ "\nCould not obtain route vertices.")

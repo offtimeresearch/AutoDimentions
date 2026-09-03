@@ -1,0 +1,58 @@
+name: Apply DimensionGenerator V0.13 Unique Axes
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'tools/apply_dimension_generator_v013_unique_axes.py'
+      - '.github/workflows/apply-dimension-generator-v013-unique-axes.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch DimensionGenerator
+        run: python3 tools/apply_dimension_generator_v013_unique_axes.py
+
+      - name: Validate DimensionGenerator
+        run: python3 tools/validate_ilogic.py DimensionGenerator.vb
+
+      - name: V0.13 center-axis safety assertions
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          t = Path('DimensionGenerator.vb').read_text(encoding='utf-8')
+          s = t.index("' V0.13 UNIQUE / VIEW-LOCAL PIPE + FLANGE CENTER AXES")
+          e = t.index('Function HasIntegratedCenterlineV08(', s)
+          active = t[s:e]
+          assert 'Centerlines.Add(points)' in active
+          assert 'AddBisector' not in active
+          assert 'CreateGeometryIntent(near.Item(i)' not in active
+          assert 'FLANGE reject perpendicular/face axis' in active
+          assert 'removed overlapping AUTO axis' in active
+          assert 'ViewName' in active
+          assert 'FindEquivalentCenterAxisV013' in active
+          assert 'CenterlineInsideSelectedViewV013' in active
+          print('V0.13 active centerline block safety assertions passed')
+          PY
+
+      - name: Commit V0.13 generator
+        run: |
+          if git diff --quiet -- DimensionGenerator.vb; then
+            echo "No DimensionGenerator change to commit"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add DimensionGenerator.vb
+          git commit -m 'Deduplicate spool center axes V0.13'
+          git push origin main

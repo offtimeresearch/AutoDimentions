@@ -406,8 +406,11 @@
 ; ELBOW MODEL
 ; -----------------------------------------------------------------------------
 (defun gtp:make-elbow-spec (prev vertex next dn carrier casing style / d1 d2 cr cm dp phi deg leg0 maxleg leg normal desiredR minR minStraight tang maxR radius tanDist fs fe t1 t2 inward center)
+  (setq *gtp-debug-stage* "elbow input direction 1")
   (setq d1 (gtp:vunit (gtp:vsub vertex prev)))
+  (setq *gtp-debug-stage* "elbow input direction 2")
   (setq d2 (gtp:vunit (gtp:vsub next vertex)))
+  (setq *gtp-debug-stage* "elbow plane normal")
   (setq cr (gtp:cross d1 d2))
   (setq cm (gtp:vmag cr))
   (setq dp (gtp:dot d1 d2))
@@ -418,7 +421,9 @@
     nil
     (progn
       (setq normal (gtp:vunit cr))
+      (setq *gtp-debug-stage* "catalogue elbow leg lookup")
       (setq leg0 (gtp:mm (gtp:elbow-leg-mm dn style)))
+      (setq *gtp-debug-stage* "available elbow leg calculation")
       (setq maxleg (min (* 0.45 (distance prev vertex)) (* 0.45 (distance vertex next))))
       (setq leg (min leg0 maxleg))
       ; The Isoplus table gives the complete equal leg length L, measured from
@@ -427,6 +432,7 @@
       ; then retain a real straight end inside L.  The previous implementation
       ; invented a 1.5D/0.6-casing radius and could subsequently force it below
       ; the casing radius, producing visibly tight or failed elbow sweeps.
+      (setq *gtp-debug-stage* "elbow radius calculation")
       (setq desiredR (* *gtp-standard-bend-radius-factor* carrier))
       (setq minR (* 0.55 casing))
       (setq minStraight
@@ -453,11 +459,17 @@
         nil
         (progn
       (setq tanDist (* radius tang))
+      (setq *gtp-debug-stage* "elbow fitting start point")
       (setq fs (gtp:vadd vertex (gtp:vscale d1 (- leg))))
+      (setq *gtp-debug-stage* "elbow fitting end point")
       (setq fe (gtp:vadd vertex (gtp:vscale d2 leg)))
+      (setq *gtp-debug-stage* "elbow tangent point 1")
       (setq t1 (gtp:vadd vertex (gtp:vscale d1 (- tanDist))))
+      (setq *gtp-debug-stage* "elbow tangent point 2")
       (setq t2 (gtp:vadd vertex (gtp:vscale d2 tanDist)))
+      (setq *gtp-debug-stage* "elbow inward vector")
       (setq inward (gtp:vunit (gtp:cross normal d1)))
+      (setq *gtp-debug-stage* "elbow arc centre")
       (setq center (gtp:vadd t1 (gtp:vscale inward radius)))
       (list
         (cons 'radius radius)

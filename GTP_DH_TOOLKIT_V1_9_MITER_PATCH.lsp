@@ -1,7 +1,9 @@
 ; GTP_DH_TOOLKIT_V1_9_MITER_PATCH.LSP
-; Small maintainable overlay for GTP_DH_TOOLKIT_V1_8.lsp.
-; Adds GTPMITER and replaces GTPPIPE with corner-only route interpretation.
-; The full generated V1.9 file can be built from V1.8 + this overlay.
+; PATCH / OVERLAY FILE - NOT THE RECOMMENDED STANDALONE FILE.
+; This file extends GTP_DH_TOOLKIT_V1_8.lsp with GTPMITER and replaces GTPPIPE
+; with corner-only route interpretation.
+; For normal AutoCAD use, load GTP_DH_TOOLKIT_V1_9.lsp instead; that file is
+; the complete standalone V1.9 toolkit and does not require this patch.
 
 (vl-load-com)
 
@@ -297,5 +299,6 @@
   (princ)
 )
 
-(princ "\nGTP V1.9 miter patch loaded. Commands: GTPMITER, GTPPIPE.")
+
+(princ "\nGTP V1.9 miter PATCH loaded. Commands: GTPMITER, GTPPIPE. Recommended standalone file: GTP_DH_TOOLKIT_V1_9.lsp.")
 (princ)

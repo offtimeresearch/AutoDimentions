@@ -65,6 +65,9 @@
 (setq *gtp-duplicate-point-tol* 1e-8)
 (setq *gtp-mm-to-du* 1.0)
 (setq *gtp-drawing-unit-name* "millimetres")
+; AutoCAD colour index: red = 1, blue = 5.
+(setq *gtp-pipe-color* 1)
+(setq *gtp-flow-type* "Flow")
 
 ; -----------------------------------------------------------------------------
 ; UNITS
@@ -245,6 +248,7 @@
       (setq obj (vla-AddCylinder ms (gtp:variant '(0.0 0.0 0.0)) (/ dia 2.0) len))
       (vla-TransformBy obj (vlax-tmatrix (gtp:axis-matrix p1 p2)))
       (vla-put-Layer obj layer)
+      (vla-put-Color obj *gtp-pipe-color*)
       obj
     )
   )
@@ -294,7 +298,11 @@
   (gtp:safe-delete path)
   (if (or (null sol) (vl-catch-all-error-p sol))
     nil
-    (progn (vla-put-Layer sol layer) sol)
+    (progn
+      (vla-put-Layer sol layer)
+      (vla-put-Color sol *gtp-pipe-color*)
+      sol
+    )
   )
 )
 
@@ -383,6 +391,21 @@
   (initget "CASING FULL")
   (setq s (getkword "\nModel mode [CASING/FULL] <CASING>: "))
   (if s s "CASING")
+)
+
+(defun gtp:get-flow-type (/ s)
+  (initget "Flow Return")
+  (setq s (getkword "\nPipe duty [Flow/Return] <Flow>: "))
+  (if (null s) (setq s "Flow"))
+  (setq *gtp-flow-type* s)
+  (setq *gtp-pipe-color* (if (= s "Flow") 1 5))
+  (princ
+    (strcat
+      "\n" s " pipe colour: "
+      (if (= s "Flow") "red." "blue.")
+    )
+  )
+  s
 )
 
 (defun gtp:get-elbow-style (/ s)
@@ -704,7 +727,7 @@
 ; =============================================================================
 ; COMMAND: GTPPIPE
 ; =============================================================================
-(defun c:GTPPIPE (/ *error* old ent typ row dn series carrierMM casingMM carrier casing mode style rawPts cleanInfo pts dupRemoved straightRemoved result)
+(defun c:GTPPIPE (/ *error* old ent typ row dn series carrierMM casingMM carrier casing mode flowType style rawPts cleanInfo pts dupRemoved straightRemoved result)
   (vl-load-com)
 
   (defun *error* (msg)
@@ -734,6 +757,7 @@
           (setq carrier (gtp:mm carrierMM))
           (setq casing (gtp:mm casingMM))
           (setq mode (gtp:get-mode))
+          (setq flowType (gtp:get-flow-type))
           (setq style (gtp:get-elbow-style))
 
           (setq rawPts (gtp:curve-points ent))
@@ -769,6 +793,7 @@
                 (strcat
                   "\nCreated Isoplus DN" (itoa dn)
                   " Series " (itoa series)
+                  " | " flowType
                   " | " (itoa (nth 0 result)) " straight spool(s)"
                   " | " (itoa (nth 1 result)) " 3D elbow(s)."
                 )

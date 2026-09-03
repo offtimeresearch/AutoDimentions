@@ -65,7 +65,6 @@
 (setq *gtp-duplicate-point-tol* 1e-8)
 (setq *gtp-mm-to-du* 1.0)
 (setq *gtp-drawing-unit-name* "millimetres")
-(setq *gtp-debug-stage* "idle")
 
 ; -----------------------------------------------------------------------------
 ; UNITS
@@ -405,12 +404,9 @@
 ; -----------------------------------------------------------------------------
 ; ELBOW MODEL
 ; -----------------------------------------------------------------------------
-(defun gtp:make-elbow-spec (prevPt vertexPt nextPt dn carrier casing style / d1 d2 cr cm dp phi deg leg0 maxleg leg normal desiredR minR minStraight tang maxR radius tanDist fs fe t1 t2 inward center)
-  (setq *gtp-debug-stage* "elbow input direction 1")
-  (setq d1 (gtp:vunit (gtp:vsub vertexPt prevPt)))
-  (setq *gtp-debug-stage* "elbow input direction 2")
-  (setq d2 (gtp:vunit (gtp:vsub nextPt vertexPt)))
-  (setq *gtp-debug-stage* "elbow plane normal")
+(defun gtp:make-elbow-spec (prev vertex next dn carrier casing style / d1 d2 cr cm dp phi deg leg0 maxleg leg normal desiredR minR minStraight tang maxR radius tanDist fs fe t1 t2 inward center)
+  (setq d1 (gtp:vunit (gtp:vsub vertex prev)))
+  (setq d2 (gtp:vunit (gtp:vsub next vertex)))
   (setq cr (gtp:cross d1 d2))
   (setq cm (gtp:vmag cr))
   (setq dp (gtp:dot d1 d2))
@@ -421,10 +417,8 @@
     nil
     (progn
       (setq normal (gtp:vunit cr))
-      (setq *gtp-debug-stage* "catalogue elbow leg lookup")
       (setq leg0 (gtp:mm (gtp:elbow-leg-mm dn style)))
-      (setq *gtp-debug-stage* "available elbow leg calculation")
-      (setq maxleg (min (* 0.45 (distance prevPt vertexPt)) (* 0.45 (distance vertexPt nextPt))))
+      (setq maxleg (min (* 0.45 (distance prev vertex)) (* 0.45 (distance vertex next))))
       (setq leg (min leg0 maxleg))
       ; The Isoplus table gives the complete equal leg length L, measured from
       ; the theoretical corner to each fitting end.  It is NOT the bend radius.
@@ -432,7 +426,6 @@
       ; then retain a real straight end inside L.  The previous implementation
       ; invented a 1.5D/0.6-casing radius and could subsequently force it below
       ; the casing radius, producing visibly tight or failed elbow sweeps.
-      (setq *gtp-debug-stage* "elbow radius calculation")
       (setq desiredR (* *gtp-standard-bend-radius-factor* carrier))
       (setq minR (* 0.55 casing))
       (setq minStraight
@@ -459,17 +452,11 @@
         nil
         (progn
       (setq tanDist (* radius tang))
-      (setq *gtp-debug-stage* "elbow fitting start point")
-      (setq fs (gtp:vadd vertexPt (gtp:vscale d1 (- leg))))
-      (setq *gtp-debug-stage* "elbow fitting end point")
-      (setq fe (gtp:vadd vertexPt (gtp:vscale d2 leg)))
-      (setq *gtp-debug-stage* "elbow tangent point 1")
-      (setq t1 (gtp:vadd vertexPt (gtp:vscale d1 (- tanDist))))
-      (setq *gtp-debug-stage* "elbow tangent point 2")
-      (setq t2 (gtp:vadd vertexPt (gtp:vscale d2 tanDist)))
-      (setq *gtp-debug-stage* "elbow inward vector")
+      (setq fs (gtp:vadd vertex (gtp:vscale d1 (- leg))))
+      (setq fe (gtp:vadd vertex (gtp:vscale d2 leg)))
+      (setq t1 (gtp:vadd vertex (gtp:vscale d1 (- tanDist))))
+      (setq t2 (gtp:vadd vertex (gtp:vscale d2 tanDist)))
       (setq inward (gtp:vunit (gtp:cross normal d1)))
-      (setq *gtp-debug-stage* "elbow arc centre")
       (setq center (gtp:vadd t1 (gtp:vscale inward radius)))
       (list
         (cons 'radius radius)
@@ -634,7 +621,13 @@
         )
         (setq i (1+ i))
       )
-      (setq out (append out (list (car (last cleaned)))))
+      ; NOTE: AutoLISP's (last lst) already returns the last ELEMENT of lst
+      ; (unlike Common Lisp, which returns a one-item sublist). Since each
+      ; element of `cleaned` is itself a 3D point list, applying (car ...)
+      ; on top of (last cleaned) incorrectly stripped the final point down
+      ; to just its X coordinate (a bare number), which then crashed later
+      ; vector math with "bad argument type: listp <number>".
+      (setq out (append out (list (last cleaned))))
       (list out duplicateRemoved straightRemoved)
     )
   )
@@ -666,8 +659,6 @@
   (while (< i n)
     (setq spec nil)
     (if (and (> i 0) (< i (1- n)))
-      (progn
-      (setq *gtp-debug-stage* (strcat "calculating elbow " (itoa i)))
       (setq spec
         (gtp:make-elbow-spec
           (nth (1- i) pts)
@@ -675,7 +666,6 @@
           (nth (1+ i) pts)
           dn carrier casing style
         )
-      )
       )
     )
     (if (and spec (gtp:spec 'clipped spec))
@@ -691,7 +681,6 @@
     (setq p2 (nth (1+ i) pts))
     (setq s (if (nth i elbows) (gtp:spec 'end (nth i elbows)) p1))
     (setq e (if (nth (1+ i) elbows) (gtp:spec 'start (nth (1+ i) elbows)) p2))
-    (setq *gtp-debug-stage* (strcat "straight route segment " (itoa (1+ i))))
     (if (> (distance s e) 1e-8)
       (setq spoolCount (+ spoolCount (gtp:model-segment s e carrier casing mode)))
     )
@@ -702,7 +691,6 @@
   (while (< i (1- n))
     (if (nth i elbows)
       (progn
-        (setq *gtp-debug-stage* (strcat "modelling elbow " (itoa i)))
         (gtp:model-elbow (nth i elbows) carrier casing mode)
         (setq elbowCount (1+ elbowCount))
       )
@@ -722,17 +710,11 @@
   (defun *error* (msg)
     (if old (setvar "CMDECHO" old))
     (if (and msg (/= msg "Function cancelled") (/= msg "quit / exit abort"))
-      (princ
-        (strcat
-          "\nGTPPIPE error during [" *gtp-debug-stage* "]: " msg
-          "\nPlease copy this complete error line."
-        )
-      )
+      (princ (strcat "\nGTPPIPE error: " msg))
     )
     (princ)
   )
 
-  (setq *gtp-debug-stage* "command setup")
   (setq old (getvar "CMDECHO"))
   (setvar "CMDECHO" 0)
   (gtp:layers)
@@ -819,7 +801,10 @@
 ; -----------------------------------------------------------------------------
 ; MITER HELPERS
 ; -----------------------------------------------------------------------------
-(defun gtp:last-item (lst) (car (last lst)))
+; Same (last lst) semantics as noted above in gtp:simplify-route-points:
+; AutoLISP's (last lst) already returns the last element (a point), so no
+; extra (car ...) is needed/wanted here.
+(defun gtp:last-item (lst) (last lst))
 
 (defun gtp:butlast (lst / out)
   (setq out '())

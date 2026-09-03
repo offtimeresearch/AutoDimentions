@@ -59,6 +59,8 @@
 
 (setq *gtp-max-pipe-length-mm* 12000.0)
 (setq *gtp-end-cutback-mm* 220.0)
+(setq *gtp-standard-bend-radius-factor* 3.0)
+(setq *gtp-min-elbow-straight-mm* 50.0)
 (setq *gtp-straight-angle-tol-deg* 0.5)
 (setq *gtp-duplicate-point-tol* 1e-8)
 (setq *gtp-mm-to-du* 1.0)
@@ -380,7 +382,7 @@
 ; -----------------------------------------------------------------------------
 ; ELBOW MODEL
 ; -----------------------------------------------------------------------------
-(defun gtp:make-elbow-spec (prev vertex next dn carrier casing style / d1 d2 cr cm dp phi deg leg0 maxleg leg normal baseR tang maxR radius tanDist fs fe t1 t2 inward center)
+(defun gtp:make-elbow-spec (prev vertex next dn carrier casing style / d1 d2 cr cm dp phi deg leg0 maxleg leg normal desiredR minR minStraight tang maxR radius tanDist fs fe t1 t2 inward center)
   (setq d1 (gtp:vunit (gtp:vsub vertex prev)))
   (setq d2 (gtp:vunit (gtp:vsub next vertex)))
   (setq cr (gtp:cross d1 d2))
@@ -396,18 +398,38 @@
       (setq leg0 (gtp:mm (gtp:elbow-leg-mm dn style)))
       (setq maxleg (min (* 0.45 (distance prev vertex)) (* 0.45 (distance vertex next))))
       (setq leg (min leg0 maxleg))
-      (setq baseR (max (* 1.5 carrier) (* 0.60 casing)))
-      (setq tang (gtp:tan (/ phi 2.0)))
-      (setq maxR (if (> tang 1e-10) (/ (* 0.90 leg) tang) baseR))
-      (setq radius (min baseR maxR))
-      (if (< radius (* 0.30 casing)) (setq radius (* 0.30 casing)))
-      (setq tanDist (* radius tang))
-      (if (> tanDist (* 0.90 leg))
-        (progn
-          (setq tanDist (* 0.90 leg))
-          (setq radius (/ tanDist tang))
+      ; The Isoplus table gives the complete equal leg length L, measured from
+      ; the theoretical corner to each fitting end.  It is NOT the bend radius.
+      ; Use the catalogue's normal 3D bend as the preferred centre-line radius,
+      ; then retain a real straight end inside L.  The previous implementation
+      ; invented a 1.5D/0.6-casing radius and could subsequently force it below
+      ; the casing radius, producing visibly tight or failed elbow sweeps.
+      (setq desiredR (* *gtp-standard-bend-radius-factor* carrier))
+      (setq minR (* 0.55 casing))
+      (setq minStraight
+        (min
+          (* 0.25 leg)
+          (max (gtp:mm *gtp-min-elbow-straight-mm*)
+               (gtp:mm *gtp-end-cutback-mm*))
         )
       )
+      (setq tang (gtp:tan (/ phi 2.0)))
+      (setq maxR
+        (if (> tang 1e-10)
+          (/ (max 0.0 (- leg minStraight)) tang)
+          desiredR
+        )
+      )
+      (setq radius (min desiredR maxR))
+
+      ; A swept circular casing cannot make a valid solid when its centre-line
+      ; radius is smaller than approximately half its outside diameter.
+      ; If the selected route is too short, omit this elbow instead of creating
+      ; corrupt/folded solids.  The caller will leave the route as straight runs.
+      (if (< radius minR)
+        nil
+        (progn
+      (setq tanDist (* radius tang))
       (setq fs (gtp:vadd vertex (gtp:vscale d1 (- leg))))
       (setq fe (gtp:vadd vertex (gtp:vscale d2 leg)))
       (setq t1 (gtp:vadd vertex (gtp:vscale d1 (- tanDist))))
@@ -427,6 +449,8 @@
         (cons 'tan2 t2)
         (cons 'end fe)
         (cons 'clipped (< leg (- leg0 1e-8)))
+      )
+        )
       )
     )
   )

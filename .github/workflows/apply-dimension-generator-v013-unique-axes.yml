@@ -35,7 +35,7 @@ jobs:
           e = t.index('Function HasIntegratedCenterlineV08(', s)
           active = t[s:e]
           assert 'Centerlines.Add(points)' in active
-          assert 'AddBisector' not in active
+          assert '.AddBisector(' not in active
           assert 'CreateGeometryIntent(near.Item(i)' not in active
           assert 'FLANGE reject perpendicular/face axis' in active
           assert 'removed overlapping AUTO axis' in active

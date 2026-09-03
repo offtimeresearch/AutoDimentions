@@ -65,6 +65,7 @@
 (setq *gtp-duplicate-point-tol* 1e-8)
 (setq *gtp-mm-to-du* 1.0)
 (setq *gtp-drawing-unit-name* "millimetres")
+(setq *gtp-debug-stage* "idle")
 
 ; -----------------------------------------------------------------------------
 ; UNITS
@@ -653,6 +654,8 @@
   (while (< i n)
     (setq spec nil)
     (if (and (> i 0) (< i (1- n)))
+      (progn
+      (setq *gtp-debug-stage* (strcat "calculating elbow " (itoa i)))
       (setq spec
         (gtp:make-elbow-spec
           (nth (1- i) pts)
@@ -660,6 +663,7 @@
           (nth (1+ i) pts)
           dn carrier casing style
         )
+      )
       )
     )
     (if (and spec (gtp:spec 'clipped spec))
@@ -675,6 +679,7 @@
     (setq p2 (nth (1+ i) pts))
     (setq s (if (nth i elbows) (gtp:spec 'end (nth i elbows)) p1))
     (setq e (if (nth (1+ i) elbows) (gtp:spec 'start (nth (1+ i) elbows)) p2))
+    (setq *gtp-debug-stage* (strcat "straight route segment " (itoa (1+ i))))
     (if (> (distance s e) 1e-8)
       (setq spoolCount (+ spoolCount (gtp:model-segment s e carrier casing mode)))
     )
@@ -685,6 +690,7 @@
   (while (< i (1- n))
     (if (nth i elbows)
       (progn
+        (setq *gtp-debug-stage* (strcat "modelling elbow " (itoa i)))
         (gtp:model-elbow (nth i elbows) carrier casing mode)
         (setq elbowCount (1+ elbowCount))
       )
@@ -704,11 +710,17 @@
   (defun *error* (msg)
     (if old (setvar "CMDECHO" old))
     (if (and msg (/= msg "Function cancelled") (/= msg "quit / exit abort"))
-      (princ (strcat "\nGTPPIPE error: " msg))
+      (princ
+        (strcat
+          "\nGTPPIPE error during [" *gtp-debug-stage* "]: " msg
+          "\nPlease copy this complete error line."
+        )
+      )
     )
     (princ)
   )
 
+  (setq *gtp-debug-stage* "command setup")
   (setq old (getvar "CMDECHO"))
   (setvar "CMDECHO" 0)
   (gtp:layers)

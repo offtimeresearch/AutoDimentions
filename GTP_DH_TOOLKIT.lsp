@@ -1,347 +1,881 @@
-; GTP_DH_TOOLKIT_V2_0.LSP
-; COMPLETE STANDALONE AutoLISP toolkit for AutoCAD / AutoCAD Mechanical.
-; Load ONLY this file with APPLOAD.
+; GTP_DH_TOOLKIT.LSP
+; Permanent AutoLISP toolkit for AutoCAD / AutoCAD Mechanical
+; ONE FILE ONLY - contains GTPPIPE and GTPMITER.
 ;
 ; Commands:
-;   GTPMITER  - extend/trim two selected route ends to their axis intersection
-;   GTPMITTER - alias of GTPMITER (alternate spelling)
-;   GTPPIPE   - generate Isoplus pre-insulated 3D pipe along a prepared route
-;   GTPUNITS  - set/check catalogue-mm to drawing-unit conversion
-;   GTPLAYER  - create/repair GTP layers
-;   GTPPINFO  - read GTP metadata from a generated solid
+;   GTPPIPE   - Create Isoplus pre-insulated 3D pipe from a prepared route
+;   GTPMITER  - Extend/trim two selected route ends to their axis intersection
+;   GTPMITTER - Alias for GTPMITER
+;   GTPUNITS  - Set/check catalogue-mm to drawing-unit conversion
+;   GTPLAYER  - Create/check GTP layers
 ;
-; Route philosophy in V2.0:
-; - NO weld-point interpretation.
-; - First clean the centreline with GTPMITER wherever two route pieces should meet.
-; - GTPPIPE treats every interior route vertex as the theoretical bend corner.
-; - Bend angle is taken from the route geometry; it does not have to be 90 degrees.
+; Route rule:
+;   GTPPIPE treats every interior polyline vertex as a theoretical bend corner.
+;   There is NO weld-point mode.
+;   Bend angle comes directly from the route geometry and can be any practical angle.
 
 (vl-load-com)
 
+; -----------------------------------------------------------------------------
+; CATALOGUE DATA - mm
+; row = (DN carrierOD series1Casing series2Casing series3Casing)
+; -----------------------------------------------------------------------------
 (setq *gtp-pipe-db*
- '((20 26.9 90 110 125)(25 33.7 90 110 125)(32 42.4 110 125 140)
-   (40 48.3 110 125 140)(50 60.3 125 140 160)(65 76.1 140 160 180)
-   (80 88.9 160 180 200)(100 114.3 200 225 250)(125 139.7 225 250 280)
-   (150 168.3 250 280 315)(200 219.1 315 355 400)(250 273.0 400 450 500)
-   (300 323.9 450 500 560)(350 355.6 500 560 630)(400 406.4 560 630 710)
-   (450 457.2 630 710 800)(500 508.0 710 800 900)(600 610.0 800 900 1000)))
+  '(
+    (20  26.9  90  110 125)
+    (25  33.7  90  110 125)
+    (32  42.4  110 125 140)
+    (40  48.3  110 125 140)
+    (50  60.3  125 140 160)
+    (65  76.1  140 160 180)
+    (80  88.9  160 180 200)
+    (100 114.3 200 225 250)
+    (125 139.7 225 250 280)
+    (150 168.3 250 280 315)
+    (200 219.1 315 355 400)
+    (250 273.0 400 450 500)
+    (300 323.9 450 500 560)
+    (350 355.6 500 560 630)
+    (400 406.4 560 630 710)
+    (450 457.2 630 710 800)
+    (500 508.0 710 800 900)
+    (600 610.0 800 900 1000)
+  )
+)
 
-; DN, short bend leg, standard bend leg (catalogue mm)
+; row = (DN shortLeg standardLeg)
 (setq *gtp-elbow-db*
- '((20 600.0 1000.0)(25 600.0 1000.0)(32 600.0 1000.0)(40 600.0 1000.0)
-   (50 600.0 1000.0)(65 600.0 1000.0)(80 600.0 1000.0)(100 700.0 1000.0)
-   (125 750.0 1000.0)(150 800.0 1000.0)(200 nil 1000.0)(250 nil 1000.0)
-   (300 nil 1000.0)(350 nil 1000.0)(400 nil 1000.0)(450 nil 1100.0)
-   (500 nil 1200.0)(600 nil 1300.0)))
+  '(
+    (20  600.0 1000.0) (25  600.0 1000.0) (32  600.0 1000.0)
+    (40  600.0 1000.0) (50  600.0 1000.0) (65  600.0 1000.0)
+    (80  600.0 1000.0) (100 700.0 1000.0) (125 750.0 1000.0)
+    (150 800.0 1000.0) (200 nil   1000.0) (250 nil   1000.0)
+    (300 nil   1000.0) (350 nil   1000.0) (400 nil   1000.0)
+    (450 nil   1100.0) (500 nil   1200.0) (600 nil   1300.0)
+  )
+)
 
 (setq *gtp-max-pipe-length-mm* 12000.0)
 (setq *gtp-end-cutback-mm* 220.0)
 (setq *gtp-mm-to-du* 1.0)
 (setq *gtp-drawing-unit-name* "millimetres")
 
-(defun gtp:unit-info (u)
- (cond ((= u 1)(list "inches" (/ 1.0 25.4)))((= u 2)(list "feet" (/ 1.0 304.8)))
-       ((= u 4)(list "millimetres" 1.0))((= u 5)(list "centimetres" 0.1))
-       ((= u 6)(list "metres" 0.001))((= u 7)(list "kilometres" 0.000001))
-       ((= u 10)(list "yards" (/ 1.0 914.4)))((= u 14)(list "decimetres" 0.01))
-       ((= u 15)(list "decametres" 0.0001))((= u 16)(list "hectometres" 0.00001))
-       (T nil)))
-
-(defun gtp:setup-units (/ s info)
- (initget "Auto MM CM M Inch Feet")
- (setq s (getkword "\nCatalogue is mm. Drawing unit [Auto/MM/CM/M/Inch/Feet] <Auto>: "))
- (if (null s)(setq s "Auto"))
- (cond
-  ((= s "Auto")
-   (setq info (gtp:unit-info (getvar "INSUNITS")))
-   (if (null info)
-    (progn (princ "\nINSUNITS is unitless/unsupported; choose unit manually.")
-           (initget "MM CM M Inch Feet")
-           (setq s (getkword "\nDrawing unit [MM/CM/M/Inch/Feet] <MM>: "))
-           (if (null s)(setq s "MM"))
-           (setq info (cond ((= s "MM")(list "millimetres" 1.0))
-                            ((= s "CM")(list "centimetres" 0.1))
-                            ((= s "M")(list "metres" 0.001))
-                            ((= s "Inch")(list "inches" (/ 1.0 25.4)))
-                            ((= s "Feet")(list "feet" (/ 1.0 304.8))))))))
-  ((= s "MM")(setq info (list "millimetres" 1.0)))
-  ((= s "CM")(setq info (list "centimetres" 0.1)))
-  ((= s "M")(setq info (list "metres" 0.001)))
-  ((= s "Inch")(setq info (list "inches" (/ 1.0 25.4))))
-  ((= s "Feet")(setq info (list "feet" (/ 1.0 304.8)))))
- (setq *gtp-drawing-unit-name* (car info) *gtp-mm-to-du* (cadr info))
- (princ (strcat "\nGTP scale: 1000 mm = " (rtos (* 1000.0 *gtp-mm-to-du*) 2 6)
-                " drawing unit(s) [" *gtp-drawing-unit-name* "].")) info)
-
-(defun gtp:mm (x)(* x *gtp-mm-to-du*))
-(defun c:GTPUNITS ()(gtp:setup-units)(princ))
-
-(defun gtp:ensure-layer (name color / doc lays lay)
- (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)) lays (vla-get-Layers doc))
- (setq lay (if (tblsearch "LAYER" name)(vla-Item lays name)(vla-Add lays name)))
- (if color(vla-put-Color lay color)) lay)
-(defun gtp:layers ()
- (gtp:ensure-layer "GTP-PIPE-CASING" 8)(gtp:ensure-layer "GTP-PIPE-INSULATION" 2)
- (gtp:ensure-layer "GTP-PIPE-CARRIER" 1)(gtp:ensure-layer "GTP-PIPE-CENTRELINE" 4)(princ))
-(defun c:GTPLAYER ()(gtp:layers)(princ "\nGTP layers ready.")(princ))
-
-(defun gtp:dot (a b)(+ (* (car a)(car b))(* (cadr a)(cadr b))(* (caddr a)(caddr b))))
-(defun gtp:vmag (v)(sqrt (gtp:dot v v)))
-(defun gtp:vsub (a b)(mapcar '- a b))
-(defun gtp:vadd (a b)(mapcar '+ a b))
-(defun gtp:vscale (v s)(mapcar '(lambda(x)(* x s)) v))
-(defun gtp:vneg (v)(gtp:vscale v -1.0))
-(defun gtp:vunit (v / m)(setq m (gtp:vmag v))(if (> m 1e-12)(gtp:vscale v (/ 1.0 m))'(0.0 0.0 1.0)))
-(defun gtp:cross (a b)(list (- (* (cadr a)(caddr b))(* (caddr a)(cadr b)))
-                             (- (* (caddr a)(car b))(* (car a)(caddr b)))
-                             (- (* (car a)(cadr b))(* (cadr a)(car b)))))
-(defun gtp:rad->deg (a)(* a (/ 180.0 pi)))
-(defun gtp:tan (a / c)(setq c (cos a))(if (< (abs c) 1e-12)1e99(/ (sin a)c)))
-(defun gtp:variant (lst)(vlax-make-variant(vlax-safearray-fill(vlax-make-safearray vlax-vbDouble '(0 . 2))lst)))
-
-(defun gtp:axis-matrix (p1 p2 / z ref x y mid)
- (setq z (gtp:vunit(gtp:vsub p2 p1)) mid (mapcar '(lambda(a b)(/ (+ a b)2.0))p1 p2))
- (setq ref (if (> (abs(caddr z))0.999)'(0.0 1.0 0.0)'(0.0 0.0 1.0)))
- (setq x (gtp:vunit(gtp:cross ref z)) y (gtp:cross z x))
- (list (list(car x)(car y)(car z)(car mid))(list(cadr x)(cadr y)(cadr z)(cadr mid))
-       (list(caddr x)(caddr y)(caddr z)(caddr mid))(list 0.0 0.0 0.0 1.0)))
-(defun gtp:frame-z (o z / ref x y)
- (setq z (gtp:vunit z) ref (if (> (abs(caddr z))0.999)'(0.0 1.0 0.0)'(0.0 0.0 1.0))
-       x (gtp:vunit(gtp:cross ref z)) y (gtp:cross z x))
- (list(list(car x)(car y)(car z)(car o))(list(cadr x)(cadr y)(cadr z)(cadr o))
-      (list(caddr x)(caddr y)(caddr z)(caddr o))(list 0.0 0.0 0.0 1.0)))
-(defun gtp:frame-xyz (o x y z)
- (list(list(car x)(car y)(car z)(car o))(list(cadr x)(cadr y)(cadr z)(cadr o))
-      (list(caddr x)(caddr y)(caddr z)(caddr o))(list 0.0 0.0 0.0 1.0)))
-
-(defun gtp:make-cylinder (p1 p2 dia layer / doc ms len o)
- (setq len (distance p1 p2))
- (if (> len 1e-8)
-  (progn(setq doc(vla-get-ActiveDocument(vlax-get-acad-object)) ms(vla-get-ModelSpace doc)
-              o(vla-AddCylinder ms(gtp:variant '(0.0 0.0 0.0))(/ dia 2.0)len))
-        (vla-TransformBy o(vlax-tmatrix(gtp:axis-matrix p1 p2)))(vla-put-Layer o layer)o)))
-(defun gtp:safe-delete (o)(if o(vl-catch-all-apply 'vla-Delete(list o))))
-(defun gtp:make-region (p normal r / doc ms c arr regs reg)
- (setq doc(vla-get-ActiveDocument(vlax-get-acad-object)) ms(vla-get-ModelSpace doc)
-       c(vla-AddCircle ms(gtp:variant '(0.0 0.0 0.0))r))
- (vla-TransformBy c(vlax-tmatrix(gtp:frame-z p normal)))
- (setq arr(vlax-make-safearray vlax-vbObject '(0 . 0)))(vlax-safearray-put-element arr 0 c)
- (setq regs(vl-catch-all-apply 'vla-AddRegion(list ms arr)))
- (if(vl-catch-all-error-p regs)(progn(gtp:safe-delete c)nil)
-  (progn(setq reg(vlax-safearray-get-element(vlax-variant-value regs)0))(gtp:safe-delete c)reg)))
-(defun gtp:make-arc-path (center t1 normal radius phi / doc ms x y a)
- (setq doc(vla-get-ActiveDocument(vlax-get-acad-object)) ms(vla-get-ModelSpace doc)
-       x(gtp:vunit(gtp:vsub t1 center)) y(gtp:cross normal x)
-       a(vla-AddArc ms(gtp:variant '(0.0 0.0 0.0))radius 0.0 phi))
- (vla-TransformBy a(vlax-tmatrix(gtp:frame-xyz center x y normal)))a)
-(defun gtp:sweep-arc (center t1 normal tangent radius phi dia layer / doc ms path reg sol)
- (setq doc(vla-get-ActiveDocument(vlax-get-acad-object)) ms(vla-get-ModelSpace doc)
-       path(gtp:make-arc-path center t1 normal radius phi) reg(gtp:make-region t1 tangent(/ dia 2.0)))
- (if(and path reg)(setq sol(vl-catch-all-apply 'vla-AddExtrudedSolidAlongPath(list ms reg path))))
- (gtp:safe-delete reg)(gtp:safe-delete path)
- (if(or(null sol)(vl-catch-all-error-p sol))nil(progn(vla-put-Layer sol layer)sol)))
-(defun gtp:arc-point (c x y r a)(gtp:vadd c(gtp:vadd(gtp:vscale x(* r(cos a)))(gtp:vscale y(* r(sin a))))))
-(defun gtp:seg-arc (center t1 normal radius phi dia layer / x y seg i a0 a1 p0 p1 out o)
- (setq x(gtp:vunit(gtp:vsub t1 center)) y(gtp:cross normal x)
-       seg(max 8(fix(+ 0.5(* 18.0(/ phi(/ pi 2.0)))))) i 0 out '())
- (while(< i seg)
-  (setq a0(* phi(/(float i)seg)) a1(* phi(/(float(1+ i))seg))
-        p0(gtp:arc-point center x y radius a0) p1(gtp:arc-point center x y radius a1)
-        o(gtp:make-cylinder p0 p1 dia layer))
-  (if o(setq out(cons o out)))(setq i(1+ i))) (reverse out))
-
-(defun gtp:add-xdata (o dn series carrier casing tag / en data)
- (regapp "GTP_DH_PIPE")(setq en(vlax-vla-object->ename o)
- data(list(list -3(list "GTP_DH_PIPE"(cons 1000 "ISOPLUS")(cons 1000 "STEEL_SINGLE")
-                         (cons 1070 dn)(cons 1070 series)(cons 1040 carrier)(cons 1040 casing)(cons 1000 tag)))))
- (entmod(append(entget en)data))(entupd en))
-(defun gtp:add-xdata-many (lst dn series carrier casing tag)(foreach o lst(if o(gtp:add-xdata o dn series carrier casing tag))))
-(defun gtp:model-arc (center t1 normal tangent r phi dia layer dn series carrier casing tag / o lst)
- (setq o(gtp:sweep-arc center t1 normal tangent r phi dia layer))
- (if o(progn(gtp:add-xdata o dn series carrier casing tag)(list o))
-  (progn(setq lst(gtp:seg-arc center t1 normal r phi dia layer))(gtp:add-xdata-many lst dn series carrier casing(strcat tag "-SEG"))lst)))
-
-(defun gtp:find-dn (dn)(assoc dn *gtp-pipe-db*))
-(defun gtp:casing-od (row s)(nth(+ 1 s)row))
-(defun gtp:get-dn (/ dn row)
- (while(null row)(setq dn(getint "\nNominal DN [20/25/32/40/50/65/80/100/125/150/200/250/300/350/400/450/500/600]: ")
-                       row(if dn(gtp:find-dn dn)))
-                  (if(and dn(null row))(princ "\nDN not in current database."))) row)
-(defun gtp:get-series (/ s)(initget "1 2 3")(setq s(getkword "\nInsulation series [1/2/3] <2>: "))(if s(atoi s)2))
-(defun gtp:get-mode (/ s)(initget "CASING FULL")(setq s(getkword "\nModel mode [CASING/FULL] <CASING>: "))(if s s "CASING"))
-(defun gtp:get-elbow-style (/ s)(initget "Standard Short")(setq s(getkword "\nElbow leg [Standard/Short] <Standard>: "))(if s s "Standard"))
-(defun gtp:elbow-leg-mm (dn style / r)(setq r(assoc dn *gtp-elbow-db*))
- (if(= style "Short")(if(nth 1 r)(nth 1 r)(nth 2 r))(nth 2 r)))
-
-(defun gtp:make-elbow-spec (prev v next dn carrier casing style / d1 d2 cr cm dp phi deg leg0 maxleg leg baseR tang maxR r td t1 t2 normal inward center fs fe)
- (setq d1(gtp:vunit(gtp:vsub v prev)) d2(gtp:vunit(gtp:vsub next v))
-       cr(gtp:cross d1 d2) cm(gtp:vmag cr) dp(gtp:dot d1 d2) phi(atan cm dp) deg(gtp:rad->deg phi))
- (if(or(< deg 1.0)(> deg 175.0)(< cm 1e-10))nil
-  (progn
-   (setq normal(gtp:vunit cr) leg0(gtp:mm(gtp:elbow-leg-mm dn style))
-         maxleg(min(* 0.45(distance prev v))(* 0.45(distance v next))) leg(min leg0 maxleg)
-         baseR(max(* 1.5 carrier)(* 0.60 casing)) tang(gtp:tan(/ phi 2.0))
-         maxR(if(> tang 1e-10)(/(* 0.90 leg)tang)baseR) r(min baseR maxR))
-   (if(< r(* 0.30 casing))(setq r(* 0.30 casing)))
-   (setq td(* r tang))
-   (if(> td(* 0.90 leg))(setq td(* 0.90 leg) r(/ td tang)))
-   (setq fs(gtp:vadd v(gtp:vscale d1(- leg))) fe(gtp:vadd v(gtp:vscale d2 leg))
-         t1(gtp:vadd v(gtp:vscale d1(- td))) t2(gtp:vadd v(gtp:vscale d2 td))
-         inward(gtp:vunit(gtp:cross normal d1)) center(gtp:vadd t1(gtp:vscale inward r)))
-   (list(cons 'leg leg)(cons 'radius r)(cons 'phi phi)(cons 'd1 d1)(cons 'd2 d2)(cons 'normal normal)
-        (cons 'start fs)(cons 'tan1 t1)(cons 'center center)(cons 'tan2 t2)(cons 'end fe)(cons 'deg deg)
-        (cons 'clipped (< leg (- leg0 1e-8)))))))
-(defun gtp:spec (k s)(cdr(assoc k s)))
-
-(defun gtp:model-elbow (s dn series carrier casing mode / r phi d1 d2 n fs t1 c t2 fe o cut cs ce tag count)
- (setq r(gtp:spec 'radius s) phi(gtp:spec 'phi s) d1(gtp:spec 'd1 s) d2(gtp:spec 'd2 s)
-       n(gtp:spec 'normal s) fs(gtp:spec 'start s) t1(gtp:spec 'tan1 s) c(gtp:spec 'center s)
-       t2(gtp:spec 'tan2 s) fe(gtp:spec 'end s) tag(strcat "ELBOW-"(rtos(gtp:spec 'deg s)2 1)) count 0)
- (foreach pair(list(list fs t1)(list t2 fe))
-  (setq o(gtp:make-cylinder(car pair)(cadr pair)carrier "GTP-PIPE-CARRIER"))
-  (if o(progn(gtp:add-xdata o dn series carrier casing(strcat tag "-CARRIER"))(setq count(1+ count)))))
- (setq count(+ count(length(gtp:model-arc c t1 n d1 r phi carrier "GTP-PIPE-CARRIER" dn series carrier casing(strcat tag "-CARRIER")))))
- (setq cut(gtp:mm *gtp-end-cutback-mm*)
-       cs(gtp:vadd fs(gtp:vscale d1(min cut(* 0.8(distance fs t1)))))
-       ce(gtp:vadd fe(gtp:vscale d2(- (min cut(* 0.8(distance t2 fe)))))))
- (foreach pair(list(list cs t1)(list t2 ce))
-  (setq o(gtp:make-cylinder(car pair)(cadr pair)casing "GTP-PIPE-CASING"))
-  (if o(progn(gtp:add-xdata o dn series carrier casing(strcat tag "-CASING"))(setq count(1+ count)))))
- (setq count(+ count(length(gtp:model-arc c t1 n d1 r phi casing "GTP-PIPE-CASING" dn series carrier casing(strcat tag "-CASING")))))
- (if(= mode "FULL")
-  (progn
-   (foreach pair(list(list cs t1)(list t2 ce))
-    (setq o(gtp:make-cylinder(car pair)(cadr pair)casing "GTP-PIPE-INSULATION"))
-    (if o(gtp:add-xdata o dn series carrier casing(strcat tag "-INSULATION"))))
-   (gtp:model-arc c t1 n d1 r phi casing "GTP-PIPE-INSULATION" dn series carrier casing(strcat tag "-INSULATION")))) count)
-
-(defun gtp:point-along (p1 p2 d)(gtp:vadd p1(gtp:vscale(gtp:vunit(gtp:vsub p2 p1))d)))
-(defun gtp:model-spool (p1 p2 dn series carrier casing mode / len cut c1 c2 o)
- (setq len(distance p1 p2) cut(gtp:mm *gtp-end-cutback-mm*))
- (if(>=(* 2.0 cut)len)(setq cut(/ len 4.0)))
- (setq c1(gtp:point-along p1 p2 cut) c2(gtp:point-along p1 p2(- len cut)))
- (setq o(gtp:make-cylinder p1 p2 carrier "GTP-PIPE-CARRIER"))(if o(gtp:add-xdata o dn series carrier casing "CARRIER"))
- (if(>(distance c1 c2)1e-8)
-  (progn(setq o(gtp:make-cylinder c1 c2 casing "GTP-PIPE-CASING"))(if o(gtp:add-xdata o dn series carrier casing "CASING"))
-         (if(= mode "FULL")(progn(setq o(gtp:make-cylinder c1 c2 casing "GTP-PIPE-INSULATION"))(if o(gtp:add-xdata o dn series carrier casing "INSULATION")))))))
-(defun gtp:model-segment (p1 p2 dn series carrier casing mode / len dir pos piece s1 s2 count)
- (setq len(distance p1 p2) dir(gtp:vunit(gtp:vsub p2 p1)) pos 0.0 count 0)
- (while(< pos(- len 1e-8))
-  (setq piece(min(gtp:mm *gtp-max-pipe-length-mm*)(- len pos)) s1(gtp:vadd p1(gtp:vscale dir pos)) s2(gtp:vadd p1(gtp:vscale dir(+ pos piece))))
-  (gtp:model-spool s1 s2 dn series carrier casing mode)(setq pos(+ pos piece) count(1+ count))) count)
-
-(defun gtp:curve-points (e / ep i p out)
- (setq ep(vl-catch-all-apply 'vlax-curve-getEndParam(list e)))
- (if(vl-catch-all-error-p ep)nil
-  (progn(setq i 0 out '())(while(<= i(fix ep))(setq p(vlax-curve-getPointAtParam e i))(if p(setq out(append out(list p))))(setq i(1+ i)))out)))
-
-(defun gtp:model-corner-route (pts dn series carrier casing mode style / n elbows i s p1 p2 a b sp ec clip)
- (setq n(length pts) elbows '() i 0 sp 0 ec 0 clip 0)
- (while(< i n)
-  (setq s(if(and(> i 0)(< i(1- n)))(gtp:make-elbow-spec(nth(1- i)pts)(nth i pts)(nth(1+ i)pts)dn carrier casing style)nil))
-  (if(and s(gtp:spec 'clipped s))(setq clip(1+ clip)))
-  (setq elbows(append elbows(list s)) i(1+ i)))
- (setq i 0)
- (while(< i(1- n))
-  (setq p1(nth i pts) p2(nth(1+ i)pts) a(if(nth i elbows)(gtp:spec 'end(nth i elbows))p1)
-        b(if(nth(1+ i)elbows)(gtp:spec 'start(nth(1+ i)elbows))p2))
-  (if(>(distance a b)1e-8)(setq sp(+ sp(gtp:model-segment a b dn series carrier casing mode))))(setq i(1+ i)))
- (setq i 1)
- (while(< i(1- n))(if(nth i elbows)(progn(gtp:model-elbow(nth i elbows)dn series carrier casing mode)(setq ec(1+ ec))))(setq i(1+ i)))
- (list sp ec clip))
-
-; ----- MITER ROUTE PREPARATION ------------------------------------------------
-(defun gtp:last-item (l)(car(last l)))
-(defun gtp:butlast (l / o)(setq o '())(while(cdr l)(setq o(append o(list(car l))) l(cdr l)))o)
-(defun gtp:replace-first (l v)(if l(cons v(cdr l))(list v)))
-(defun gtp:replace-last (l v)(if l(append(gtp:butlast l)(list v))(list v)))
-(defun gtp:valid-route-p (e)(and e(member(cdr(assoc 0(entget e)))'("LINE" "LWPOLYLINE" "POLYLINE"))))
-(defun gtp:end-info (pts pick / p0 pn d0 dn adj dir ordered)
- (setq p0(car pts) pn(gtp:last-item pts) d0(distance pick p0) dn(distance pick pn))
- (if(<= d0 dn)
-  (progn(setq adj(cadr pts) dir(gtp:vunit(gtp:vsub p0 adj)) ordered(reverse pts))(list(cons 'end p0)(cons 'dir dir)(cons 'ordered ordered)(cons 'len(distance p0 adj))))
-  (progn(setq adj(nth(- (length pts)2)pts) dir(gtp:vunit(gtp:vsub pn adj)) ordered pts)(list(cons 'end pn)(cons 'dir dir)(cons 'ordered ordered)(cons 'len(distance pn adj))))))
-(defun gtp:line-corner (p1 u p2 v / w a b c d e den s t q1 q2)
- (setq u(gtp:vunit u) v(gtp:vunit v) w(gtp:vsub p1 p2) a(gtp:dot u u) b(gtp:dot u v) c(gtp:dot v v)
-       d(gtp:dot u w) e(gtp:dot v w) den(-(* a c)(* b b)))
- (if(<(abs den)1e-10)nil
-  (progn(setq s(/(-(* b e)(* c d))den) t(/(-(* a e)(* b d))den)
-              q1(gtp:vadd p1(gtp:vscale u s)) q2(gtp:vadd p2(gtp:vscale v t)))
-         (list(cons 'corner(mapcar '(lambda(x y)(/ (+ x y)2.0))q1 q2))(cons 'gap(distance q1 q2))(cons 's s)(cons 't t)))))
-(defun gtp:make-3d-polyline (pts layer / h)
- (setq h(entmakex(list'(0 . "POLYLINE")'(100 . "AcDbEntity")(cons 8 layer)'(100 . "AcDb3dPolyline")
-                         (cons 10 '(0.0 0.0 0.0))'(66 . 1)'(70 . 8))))
- (if h(progn(foreach p pts(entmakex(list'(0 . "VERTEX")'(100 . "AcDbEntity")(cons 8 layer)'(100 . "AcDbVertex")
-                                      '(100 . "AcDb3dPolylineVertex")(cons 10 p)'(70 . 32))))
-             (entmakex(list'(0 . "SEQEND")'(100 . "AcDbEntity")(cons 8 layer)))h)))
-(defun gtp:miter-points (i1 i2 corner / a b)
- (setq a(gtp:replace-last(cdr(assoc 'ordered i1))corner) b(reverse(cdr(assoc 'ordered i2))) b(gtp:replace-first b corner))
- (append a(cdr b)))
-
-(defun c:GTPMITER (/ *error* old s1 s2 e1 e2 p1 p2 pts1 pts2 i1 i2 ll corner gap tol route new ss ans prev next d1 d2 ang)
- (vl-load-com)
- (defun *error*(m)(if old(setvar "CMDECHO" old))(if(and m(/= m "Function cancelled")(/= m "quit / exit abort"))(princ(strcat "\nGTPMITER error: " m)))(princ))
- (setq old(getvar "CMDECHO"))(setvar "CMDECHO" 0)(gtp:layers)
- (setq s1(entsel "\nSelect FIRST route near end to connect: "))
- (if s1
-  (progn(setq e1(car s1))
-   (if(gtp:valid-route-p e1)
-    (progn(setq s2(entsel "\nSelect SECOND route near end to connect: "))
-     (if(and s2(/= e1(car s2))(gtp:valid-route-p(car s2)))
-      (progn(setq e2(car s2) p1(trans(cadr s1)1 0) p2(trans(cadr s2)1 0) pts1(gtp:curve-points e1) pts2(gtp:curve-points e2))
-       (if(and pts1 pts2(>=(length pts1)2)(>=(length pts2)2))
-        (progn(setq i1(gtp:end-info pts1 p1) i2(gtp:end-info pts2 p2)
-                    ll(gtp:line-corner(cdr(assoc 'end i1))(cdr(assoc 'dir i1))(cdr(assoc 'end i2))(cdr(assoc 'dir i2))))
-         (if ll
-          (progn(setq corner(cdr(assoc 'corner ll)) gap(cdr(assoc 'gap ll)) tol(max 1e-7(* 0.002(max(cdr(assoc 'len i1))(cdr(assoc 'len i2))))))
-           (if(<= gap tol)
-            (progn(setq route(gtp:miter-points i1 i2 corner) new(gtp:make-3d-polyline route "GTP-PIPE-CENTRELINE"))
-             (if new
-              (progn
-               (setq prev(nth(- (length(cdr(assoc 'ordered i1)))2)(cdr(assoc 'ordered i1)))
-                     next(nth 1(reverse(cdr(assoc 'ordered i2))))
-                     d1(gtp:vunit(gtp:vsub corner prev)) d2(gtp:vunit(gtp:vsub next corner))
-                     ang(gtp:rad->deg(atan(gtp:vmag(gtp:cross d1 d2))(gtp:dot d1 d2))))
-               (princ(strcat "\nMiter centreline created. Bend angle = "(rtos ang 2 2)" deg."))
-               (initget "Keep Delete")(setq ans(getkword "\nSource objects [Keep/Delete] <Keep>: "))(if(null ans)(setq ans "Keep"))
-               (if(= ans "Delete")(progn(entdel e1)(entdel e2)))
-               (setq ss(ssadd))(ssadd new ss)(sssetfirst nil ss)(princ "\nNew centreline selected. Run GTPPIPE."))
-              (princ "\nCould not create joined 3D centreline.")))
-            (princ(strcat "\nSelected axes are skew in 3D; closest gap = "(rtos gap 2 6)"."))))
-          (princ "\nSelected terminal axes are parallel/nearly parallel; no intersection.")))
-        (princ "\nCould not read route vertices.")))
-      (princ "\nSecond selection must be a different LINE/POLYLINE.")))
-    (princ "\nFirst selection must be a LINE/POLYLINE.")))
-  (princ "\nNothing selected."))
- (setvar "CMDECHO" old)(princ))
-(defun c:GTPMITTER ()(c:GTPMITER))
-
-(defun c:GTPPIPE (/ *error* old ent typ row dn series carrierMM casingMM carrier casing mode style pts result)
- (vl-load-com)
- (defun *error*(m)(if old(setvar "CMDECHO" old))(if(and m(/= m "Function cancelled")(/= m "quit / exit abort"))(princ(strcat "\nGTPPIPE error: " m)))(princ))
- (setq old(getvar "CMDECHO"))(setvar "CMDECHO" 0)(gtp:layers)(setq ent(car(entsel "\nSelect prepared route LINE / 2D or 3D POLYLINE: ")))
- (if ent
-  (progn(setq typ(cdr(assoc 0(entget ent))))
-   (if(member typ'("LINE" "LWPOLYLINE" "POLYLINE"))
-    (progn(gtp:setup-units)(setq row(gtp:get-dn))
-     (if row
-      (progn(setq dn(nth 0 row) carrierMM(nth 1 row) series(gtp:get-series) casingMM(gtp:casing-od row series)
-                  carrier(gtp:mm carrierMM) casing(gtp:mm casingMM) mode(gtp:get-mode) style(gtp:get-elbow-style) pts(gtp:curve-points ent))
-       (if(and pts(>=(length pts)2))
-        (progn(setq result(gtp:model-corner-route pts dn series carrier casing mode style))
-         (princ(strcat "\nCreated Isoplus DN"(itoa dn)" Series "(itoa series)" | "(itoa(nth 0 result))" straight spool(s) | "
-                       (itoa(nth 1 result))" 3D elbow(s)."))
-         (if(>(nth 2 result)0)(princ(strcat "\nNote: "(itoa(nth 2 result))" elbow fitting leg(s) were shortened for available route length."))))
-        (princ "\nCould not obtain route vertices."))))
-    (princ "\nGTPPIPE accepts LINE, LWPOLYLINE or POLYLINE.")))
-  (princ "\nNothing selected."))
- (setvar "CMDECHO" old)(princ))
+; -----------------------------------------------------------------------------
+; UNITS
+; -----------------------------------------------------------------------------
+(defun gtp:unit-info-from-insunits (u)
+  (cond
+    ((= u 1)  (list "inches" (/ 1.0 25.4)))
+    ((= u 2)  (list "feet" (/ 1.0 304.8)))
+    ((= u 4)  (list "millimetres" 1.0))
+    ((= u 5)  (list "centimetres" 0.1))
+    ((= u 6)  (list "metres" 0.001))
+    ((= u 7)  (list "kilometres" 0.000001))
+    (T nil)
+  )
 )
 
-(defun c:GTPPINFO (/ e ed xd)
- (setq e(car(entsel "\nSelect GTP pipe solid: ")))
- (if e(progn(setq ed(entget e '("GTP_DH_PIPE")) xd(assoc -3 ed))(if xd(princ(strcat "\n"(vl-princ-to-string xd)))(princ "\nNo GTP_DH_PIPE metadata found."))))(princ))
+(defun gtp:manual-unit-info (/ s)
+  (initget "MM CM M Inch Feet")
+  (setq s (getkword "\nDrawing unit [MM/CM/M/Inch/Feet] <MM>: "))
+  (if (null s) (setq s "MM"))
+  (cond
+    ((= s "MM")   (list "millimetres" 1.0))
+    ((= s "CM")   (list "centimetres" 0.1))
+    ((= s "M")    (list "metres" 0.001))
+    ((= s "Inch") (list "inches" (/ 1.0 25.4)))
+    ((= s "Feet") (list "feet" (/ 1.0 304.8)))
+  )
+)
 
-(princ "\nGTP DH Toolkit V2.0 loaded successfully.")
-(princ "\nCommands: GTPMITER (or GTPMITTER), GTPPIPE, GTPUNITS, GTPLAYER, GTPPINFO.")
+(defun gtp:setup-units (/ s info)
+  (initget "Auto MM CM M Inch Feet")
+  (setq s (getkword "\nCatalogue is mm. Drawing unit [Auto/MM/CM/M/Inch/Feet] <Auto>: "))
+  (if (null s) (setq s "Auto"))
+  (cond
+    ((= s "Auto")
+      (setq info (gtp:unit-info-from-insunits (getvar "INSUNITS")))
+      (if (null info) (setq info (gtp:manual-unit-info)))
+    )
+    ((= s "MM")   (setq info (list "millimetres" 1.0)))
+    ((= s "CM")   (setq info (list "centimetres" 0.1)))
+    ((= s "M")    (setq info (list "metres" 0.001)))
+    ((= s "Inch") (setq info (list "inches" (/ 1.0 25.4))))
+    ((= s "Feet") (setq info (list "feet" (/ 1.0 304.8))))
+  )
+  (setq *gtp-drawing-unit-name* (car info))
+  (setq *gtp-mm-to-du* (cadr info))
+  (princ
+    (strcat
+      "\nGTP scale: 1000 mm = "
+      (rtos (* 1000.0 *gtp-mm-to-du*) 2 6)
+      " drawing units [" *gtp-drawing-unit-name* "]."
+    )
+  )
+  info
+)
+
+(defun gtp:mm (x) (* x *gtp-mm-to-du*))
+
+(defun c:GTPUNITS ()
+  (gtp:setup-units)
+  (princ)
+)
+
+; -----------------------------------------------------------------------------
+; LAYERS
+; -----------------------------------------------------------------------------
+(defun gtp:ensure-layer (name color / doc lays lay)
+  (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
+  (setq lays (vla-get-Layers doc))
+  (if (tblsearch "LAYER" name)
+    (setq lay (vla-Item lays name))
+    (setq lay (vla-Add lays name))
+  )
+  (if color (vla-put-Color lay color))
+  lay
+)
+
+(defun gtp:layers ()
+  (gtp:ensure-layer "GTP-PIPE-CASING" 8)
+  (gtp:ensure-layer "GTP-PIPE-INSULATION" 2)
+  (gtp:ensure-layer "GTP-PIPE-CARRIER" 1)
+  (gtp:ensure-layer "GTP-PIPE-CENTRELINE" 4)
+  (princ)
+)
+
+(defun c:GTPLAYER ()
+  (gtp:layers)
+  (princ "\nGTP layers ready.")
+  (princ)
+)
+
+; -----------------------------------------------------------------------------
+; VECTOR / GEOMETRY HELPERS
+; -----------------------------------------------------------------------------
+(defun gtp:vadd (a b) (mapcar '+ a b))
+(defun gtp:vsub (a b) (mapcar '- a b))
+(defun gtp:vscale (v s) (mapcar '(lambda (x) (* x s)) v))
+(defun gtp:dot (a b)
+  (+ (* (car a) (car b)) (* (cadr a) (cadr b)) (* (caddr a) (caddr b)))
+)
+(defun gtp:vmag (v) (sqrt (gtp:dot v v)))
+(defun gtp:vunit (v / m)
+  (setq m (gtp:vmag v))
+  (if (> m 1e-12) (gtp:vscale v (/ 1.0 m)) '(0.0 0.0 1.0))
+)
+(defun gtp:cross (a b)
+  (list
+    (- (* (cadr a) (caddr b)) (* (caddr a) (cadr b)))
+    (- (* (caddr a) (car b)) (* (car a) (caddr b)))
+    (- (* (car a) (cadr b)) (* (cadr a) (car b)))
+  )
+)
+(defun gtp:rad->deg (a) (* a (/ 180.0 pi)))
+(defun gtp:tan (a / c)
+  (setq c (cos a))
+  (if (< (abs c) 1e-12) 1e99 (/ (sin a) c))
+)
+(defun gtp:variant (lst)
+  (vlax-make-variant
+    (vlax-safearray-fill
+      (vlax-make-safearray vlax-vbDouble '(0 . 2))
+      lst
+    )
+  )
+)
+
+(defun gtp:axis-matrix (p1 p2 / z ref x y mid)
+  (setq z (gtp:vunit (gtp:vsub p2 p1)))
+  (setq mid (mapcar '(lambda (a b) (/ (+ a b) 2.0)) p1 p2))
+  (if (> (abs (caddr z)) 0.999)
+    (setq ref '(0.0 1.0 0.0))
+    (setq ref '(0.0 0.0 1.0))
+  )
+  (setq x (gtp:vunit (gtp:cross ref z)))
+  (setq y (gtp:cross z x))
+  (list
+    (list (car x) (car y) (car z) (car mid))
+    (list (cadr x) (cadr y) (cadr z) (cadr mid))
+    (list (caddr x) (caddr y) (caddr z) (caddr mid))
+    (list 0.0 0.0 0.0 1.0)
+  )
+)
+
+(defun gtp:frame-z (origin z / ref x y)
+  (setq z (gtp:vunit z))
+  (if (> (abs (caddr z)) 0.999)
+    (setq ref '(0.0 1.0 0.0))
+    (setq ref '(0.0 0.0 1.0))
+  )
+  (setq x (gtp:vunit (gtp:cross ref z)))
+  (setq y (gtp:cross z x))
+  (list
+    (list (car x) (car y) (car z) (car origin))
+    (list (cadr x) (cadr y) (cadr z) (cadr origin))
+    (list (caddr x) (caddr y) (caddr z) (caddr origin))
+    (list 0.0 0.0 0.0 1.0)
+  )
+)
+
+(defun gtp:frame-xyz (origin x y z)
+  (list
+    (list (car x) (car y) (car z) (car origin))
+    (list (cadr x) (cadr y) (cadr z) (cadr origin))
+    (list (caddr x) (caddr y) (caddr z) (caddr origin))
+    (list 0.0 0.0 0.0 1.0)
+  )
+)
+
+; -----------------------------------------------------------------------------
+; SOLID CREATION
+; -----------------------------------------------------------------------------
+(defun gtp:make-cylinder (p1 p2 dia layer / doc ms len obj)
+  (setq len (distance p1 p2))
+  (if (> len 1e-8)
+    (progn
+      (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
+      (setq ms (vla-get-ModelSpace doc))
+      (setq obj (vla-AddCylinder ms (gtp:variant '(0.0 0.0 0.0)) (/ dia 2.0) len))
+      (vla-TransformBy obj (vlax-tmatrix (gtp:axis-matrix p1 p2)))
+      (vla-put-Layer obj layer)
+      obj
+    )
+  )
+)
+
+(defun gtp:safe-delete (obj)
+  (if obj (vl-catch-all-apply 'vla-Delete (list obj)))
+)
+
+(defun gtp:make-circle-region (center normal radius / doc ms cir arr regs reg)
+  (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
+  (setq ms (vla-get-ModelSpace doc))
+  (setq cir (vla-AddCircle ms (gtp:variant '(0.0 0.0 0.0)) radius))
+  (vla-TransformBy cir (vlax-tmatrix (gtp:frame-z center normal)))
+  (setq arr (vlax-make-safearray vlax-vbObject '(0 . 0)))
+  (vlax-safearray-put-element arr 0 cir)
+  (setq regs (vl-catch-all-apply 'vla-AddRegion (list ms arr)))
+  (if (vl-catch-all-error-p regs)
+    (progn (gtp:safe-delete cir) nil)
+    (progn
+      (setq reg (vlax-safearray-get-element (vlax-variant-value regs) 0))
+      (gtp:safe-delete cir)
+      reg
+    )
+  )
+)
+
+(defun gtp:make-arc-path (center t1 normal radius phi / doc ms x y arc)
+  (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
+  (setq ms (vla-get-ModelSpace doc))
+  (setq x (gtp:vunit (gtp:vsub t1 center)))
+  (setq y (gtp:cross normal x))
+  (setq arc (vla-AddArc ms (gtp:variant '(0.0 0.0 0.0)) radius 0.0 phi))
+  (vla-TransformBy arc (vlax-tmatrix (gtp:frame-xyz center x y normal)))
+  arc
+)
+
+(defun gtp:sweep-arc (center t1 normal tangent radius phi dia layer / doc ms path reg sol)
+  (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
+  (setq ms (vla-get-ModelSpace doc))
+  (setq path (gtp:make-arc-path center t1 normal radius phi))
+  (setq reg (gtp:make-circle-region t1 tangent (/ dia 2.0)))
+  (if (and path reg)
+    (setq sol (vl-catch-all-apply 'vla-AddExtrudedSolidAlongPath (list ms reg path)))
+  )
+  (gtp:safe-delete reg)
+  (gtp:safe-delete path)
+  (if (or (null sol) (vl-catch-all-error-p sol))
+    nil
+    (progn (vla-put-Layer sol layer) sol)
+  )
+)
+
+(defun gtp:arc-point (center x y radius a)
+  (gtp:vadd center
+    (gtp:vadd
+      (gtp:vscale x (* radius (cos a)))
+      (gtp:vscale y (* radius (sin a)))
+    )
+  )
+)
+
+(defun gtp:segmented-arc (center t1 normal radius phi dia layer / x y seg i a0 a1 p0 p1 obj out)
+  (setq x (gtp:vunit (gtp:vsub t1 center)))
+  (setq y (gtp:cross normal x))
+  (setq seg (max 8 (fix (+ 0.5 (* 18.0 (/ phi (/ pi 2.0)))))))
+  (setq i 0 out '())
+  (while (< i seg)
+    (setq a0 (* phi (/ (float i) seg)))
+    (setq a1 (* phi (/ (float (1+ i)) seg)))
+    (setq p0 (gtp:arc-point center x y radius a0))
+    (setq p1 (gtp:arc-point center x y radius a1))
+    (setq obj (gtp:make-cylinder p0 p1 dia layer))
+    (if obj (setq out (cons obj out)))
+    (setq i (1+ i))
+  )
+  (reverse out)
+)
+
+(defun gtp:model-arc (center t1 normal tangent radius phi dia layer / obj)
+  (setq obj (gtp:sweep-arc center t1 normal tangent radius phi dia layer))
+  (if obj (list obj) (gtp:segmented-arc center t1 normal radius phi dia layer))
+)
+
+; -----------------------------------------------------------------------------
+; PIPE / ELBOW DATABASE HELPERS
+; -----------------------------------------------------------------------------
+(defun gtp:find-dn (dn) (assoc dn *gtp-pipe-db*))
+
+(defun gtp:casing-od (row series)
+  (cond
+    ((= series 1) (nth 2 row))
+    ((= series 2) (nth 3 row))
+    ((= series 3) (nth 4 row))
+  )
+)
+
+(defun gtp:get-dn (/ dn row)
+  (while (null row)
+    (setq dn (getint "\nNominal DN [20/25/32/40/50/65/80/100/125/150/200/250/300/350/400/450/500/600]: "))
+    (if dn (setq row (gtp:find-dn dn)))
+    (if (and dn (null row)) (princ "\nDN not in current database."))
+  )
+  row
+)
+
+(defun gtp:get-series (/ s)
+  (initget "1 2 3")
+  (setq s (getkword "\nInsulation series [1/2/3] <2>: "))
+  (if s (atoi s) 2)
+)
+
+(defun gtp:get-mode (/ s)
+  (initget "CASING FULL")
+  (setq s (getkword "\nModel mode [CASING/FULL] <CASING>: "))
+  (if s s "CASING")
+)
+
+(defun gtp:get-elbow-style (/ s)
+  (initget "Standard Short")
+  (setq s (getkword "\nElbow leg [Standard/Short] <Standard>: "))
+  (if s s "Standard")
+)
+
+(defun gtp:elbow-leg-mm (dn style / row short standard)
+  (setq row (assoc dn *gtp-elbow-db*))
+  (setq short (nth 1 row))
+  (setq standard (nth 2 row))
+  (if (= style "Short")
+    (if short short standard)
+    standard
+  )
+)
+
+; -----------------------------------------------------------------------------
+; ELBOW MODEL
+; -----------------------------------------------------------------------------
+(defun gtp:make-elbow-spec (prev vertex next dn carrier casing style / d1 d2 cr cm dp phi deg leg0 maxleg leg normal baseR tang maxR radius tanDist fs fe t1 t2 inward center)
+  (setq d1 (gtp:vunit (gtp:vsub vertex prev)))
+  (setq d2 (gtp:vunit (gtp:vsub next vertex)))
+  (setq cr (gtp:cross d1 d2))
+  (setq cm (gtp:vmag cr))
+  (setq dp (gtp:dot d1 d2))
+  (setq phi (atan cm dp))
+  (setq deg (gtp:rad->deg phi))
+
+  (if (or (< deg 1.0) (> deg 175.0) (< cm 1e-10))
+    nil
+    (progn
+      (setq normal (gtp:vunit cr))
+      (setq leg0 (gtp:mm (gtp:elbow-leg-mm dn style)))
+      (setq maxleg (min (* 0.45 (distance prev vertex)) (* 0.45 (distance vertex next))))
+      (setq leg (min leg0 maxleg))
+      (setq baseR (max (* 1.5 carrier) (* 0.60 casing)))
+      (setq tang (gtp:tan (/ phi 2.0)))
+      (setq maxR (if (> tang 1e-10) (/ (* 0.90 leg) tang) baseR))
+      (setq radius (min baseR maxR))
+      (if (< radius (* 0.30 casing)) (setq radius (* 0.30 casing)))
+      (setq tanDist (* radius tang))
+      (if (> tanDist (* 0.90 leg))
+        (progn
+          (setq tanDist (* 0.90 leg))
+          (setq radius (/ tanDist tang))
+        )
+      )
+      (setq fs (gtp:vadd vertex (gtp:vscale d1 (- leg))))
+      (setq fe (gtp:vadd vertex (gtp:vscale d2 leg)))
+      (setq t1 (gtp:vadd vertex (gtp:vscale d1 (- tanDist))))
+      (setq t2 (gtp:vadd vertex (gtp:vscale d2 tanDist)))
+      (setq inward (gtp:vunit (gtp:cross normal d1)))
+      (setq center (gtp:vadd t1 (gtp:vscale inward radius)))
+      (list
+        (cons 'radius radius)
+        (cons 'phi phi)
+        (cons 'deg deg)
+        (cons 'd1 d1)
+        (cons 'd2 d2)
+        (cons 'normal normal)
+        (cons 'start fs)
+        (cons 'tan1 t1)
+        (cons 'center center)
+        (cons 'tan2 t2)
+        (cons 'end fe)
+        (cons 'clipped (< leg (- leg0 1e-8)))
+      )
+    )
+  )
+)
+
+(defun gtp:spec (key spec) (cdr (assoc key spec)))
+
+(defun gtp:model-elbow (spec carrier casing mode / r phi d1 d2 normal fs t1 center t2 fe cut cut1 cut2 cs ce obj)
+  (setq r (gtp:spec 'radius spec))
+  (setq phi (gtp:spec 'phi spec))
+  (setq d1 (gtp:spec 'd1 spec))
+  (setq d2 (gtp:spec 'd2 spec))
+  (setq normal (gtp:spec 'normal spec))
+  (setq fs (gtp:spec 'start spec))
+  (setq t1 (gtp:spec 'tan1 spec))
+  (setq center (gtp:spec 'center spec))
+  (setq t2 (gtp:spec 'tan2 spec))
+  (setq fe (gtp:spec 'end spec))
+
+  (gtp:make-cylinder fs t1 carrier "GTP-PIPE-CARRIER")
+  (gtp:model-arc center t1 normal d1 r phi carrier "GTP-PIPE-CARRIER")
+  (gtp:make-cylinder t2 fe carrier "GTP-PIPE-CARRIER")
+
+  (setq cut (gtp:mm *gtp-end-cutback-mm*))
+  (setq cut1 (min cut (* 0.80 (distance fs t1))))
+  (setq cut2 (min cut (* 0.80 (distance t2 fe))))
+  (setq cs (gtp:vadd fs (gtp:vscale d1 cut1)))
+  (setq ce (gtp:vadd fe (gtp:vscale d2 (- cut2))))
+  (gtp:make-cylinder cs t1 casing "GTP-PIPE-CASING")
+  (gtp:model-arc center t1 normal d1 r phi casing "GTP-PIPE-CASING")
+  (gtp:make-cylinder t2 ce casing "GTP-PIPE-CASING")
+
+  (if (= mode "FULL")
+    (progn
+      (gtp:make-cylinder cs t1 casing "GTP-PIPE-INSULATION")
+      (gtp:model-arc center t1 normal d1 r phi casing "GTP-PIPE-INSULATION")
+      (gtp:make-cylinder t2 ce casing "GTP-PIPE-INSULATION")
+    )
+  )
+)
+
+; -----------------------------------------------------------------------------
+; STRAIGHT PIPE MODEL
+; -----------------------------------------------------------------------------
+(defun gtp:point-along (p1 p2 dist)
+  (gtp:vadd p1 (gtp:vscale (gtp:vunit (gtp:vsub p2 p1)) dist))
+)
+
+(defun gtp:model-spool (p1 p2 carrier casing mode / len cut c1 c2)
+  (setq len (distance p1 p2))
+  (setq cut (gtp:mm *gtp-end-cutback-mm*))
+  (if (>= (* 2.0 cut) len) (setq cut (/ len 4.0)))
+  (setq c1 (gtp:point-along p1 p2 cut))
+  (setq c2 (gtp:point-along p1 p2 (- len cut)))
+
+  (gtp:make-cylinder p1 p2 carrier "GTP-PIPE-CARRIER")
+  (if (> (distance c1 c2) 1e-8)
+    (progn
+      (gtp:make-cylinder c1 c2 casing "GTP-PIPE-CASING")
+      (if (= mode "FULL")
+        (gtp:make-cylinder c1 c2 casing "GTP-PIPE-INSULATION")
+      )
+    )
+  )
+)
+
+(defun gtp:model-segment (p1 p2 carrier casing mode / len dir pos piece s1 s2 count)
+  (setq len (distance p1 p2))
+  (setq dir (gtp:vunit (gtp:vsub p2 p1)))
+  (setq pos 0.0 count 0)
+  (while (< pos (- len 1e-8))
+    (setq piece (min (gtp:mm *gtp-max-pipe-length-mm*) (- len pos)))
+    (setq s1 (gtp:vadd p1 (gtp:vscale dir pos)))
+    (setq s2 (gtp:vadd p1 (gtp:vscale dir (+ pos piece))))
+    (gtp:model-spool s1 s2 carrier casing mode)
+    (setq pos (+ pos piece))
+    (setq count (1+ count))
+  )
+  count
+)
+
+; -----------------------------------------------------------------------------
+; ROUTE READING / CORNER MODELLING
+; -----------------------------------------------------------------------------
+(defun gtp:curve-points (ename / endParam i p pts)
+  (setq endParam (vl-catch-all-apply 'vlax-curve-getEndParam (list ename)))
+  (if (vl-catch-all-error-p endParam)
+    nil
+    (progn
+      (setq i 0 pts '())
+      (while (<= i (fix endParam))
+        (setq p (vlax-curve-getPointAtParam ename i))
+        (if p (setq pts (append pts (list p))))
+        (setq i (1+ i))
+      )
+      pts
+    )
+  )
+)
+
+(defun gtp:model-corner-route (pts dn carrier casing mode style / n elbows i spec p1 p2 s e spoolCount elbowCount clippedCount)
+  (setq n (length pts))
+  (setq elbows '() i 0 spoolCount 0 elbowCount 0 clippedCount 0)
+
+  (while (< i n)
+    (setq spec nil)
+    (if (and (> i 0) (< i (1- n)))
+      (setq spec
+        (gtp:make-elbow-spec
+          (nth (1- i) pts)
+          (nth i pts)
+          (nth (1+ i) pts)
+          dn carrier casing style
+        )
+      )
+    )
+    (if (and spec (gtp:spec 'clipped spec))
+      (setq clippedCount (1+ clippedCount))
+    )
+    (setq elbows (append elbows (list spec)))
+    (setq i (1+ i))
+  )
+
+  (setq i 0)
+  (while (< i (1- n))
+    (setq p1 (nth i pts))
+    (setq p2 (nth (1+ i) pts))
+    (setq s (if (nth i elbows) (gtp:spec 'end (nth i elbows)) p1))
+    (setq e (if (nth (1+ i) elbows) (gtp:spec 'start (nth (1+ i) elbows)) p2))
+    (if (> (distance s e) 1e-8)
+      (setq spoolCount (+ spoolCount (gtp:model-segment s e carrier casing mode)))
+    )
+    (setq i (1+ i))
+  )
+
+  (setq i 1)
+  (while (< i (1- n))
+    (if (nth i elbows)
+      (progn
+        (gtp:model-elbow (nth i elbows) carrier casing mode)
+        (setq elbowCount (1+ elbowCount))
+      )
+    )
+    (setq i (1+ i))
+  )
+
+  (list spoolCount elbowCount clippedCount)
+)
+
+; =============================================================================
+; COMMAND: GTPPIPE
+; =============================================================================
+(defun c:GTPPIPE (/ *error* old ent typ row dn series carrierMM casingMM carrier casing mode style pts result)
+  (vl-load-com)
+  (defun *error* (msg)
+    (if old (setvar "CMDECHO" old))
+    (if (and msg (/= msg "Function cancelled") (/= msg "quit / exit abort"))
+      (princ (strcat "\nGTPPIPE error: " msg))
+    )
+    (princ)
+  )
+
+  (setq old (getvar "CMDECHO"))
+  (setvar "CMDECHO" 0)
+  (gtp:layers)
+  (setq ent (car (entsel "\nSelect prepared route LINE / 2D or 3D POLYLINE: ")))
+
+  (if ent
+    (progn
+      (setq typ (cdr (assoc 0 (entget ent))))
+      (if (member typ '("LINE" "LWPOLYLINE" "POLYLINE"))
+        (progn
+          (gtp:setup-units)
+          (setq row (gtp:get-dn))
+          (setq dn (nth 0 row))
+          (setq carrierMM (nth 1 row))
+          (setq series (gtp:get-series))
+          (setq casingMM (gtp:casing-od row series))
+          (setq carrier (gtp:mm carrierMM))
+          (setq casing (gtp:mm casingMM))
+          (setq mode (gtp:get-mode))
+          (setq style (gtp:get-elbow-style))
+          (setq pts (gtp:curve-points ent))
+
+          (if (and pts (>= (length pts) 2))
+            (progn
+              (setq result (gtp:model-corner-route pts dn carrier casing mode style))
+              (princ
+                (strcat
+                  "\nCreated Isoplus DN" (itoa dn)
+                  " Series " (itoa series)
+                  " | " (itoa (nth 0 result)) " straight spool(s)"
+                  " | " (itoa (nth 1 result)) " 3D elbow(s)."
+                )
+              )
+              (if (> (nth 2 result) 0)
+                (princ
+                  (strcat
+                    "\nNote: " (itoa (nth 2 result))
+                    " elbow fitting leg(s) were shortened for available route length."
+                  )
+                )
+              )
+            )
+            (princ "\nCould not obtain route vertices.")
+          )
+        )
+        (princ "\nGTPPIPE accepts LINE, LWPOLYLINE or POLYLINE.")
+      )
+    )
+    (princ "\nNothing selected.")
+  )
+
+  (setvar "CMDECHO" old)
+  (princ)
+)
+
+; -----------------------------------------------------------------------------
+; MITER HELPERS
+; -----------------------------------------------------------------------------
+(defun gtp:last-item (lst) (car (last lst)))
+
+(defun gtp:butlast (lst / out)
+  (setq out '())
+  (while (cdr lst)
+    (setq out (append out (list (car lst))))
+    (setq lst (cdr lst))
+  )
+  out
+)
+
+(defun gtp:replace-first (lst value)
+  (if lst (cons value (cdr lst)) (list value))
+)
+
+(defun gtp:replace-last (lst value)
+  (if lst (append (gtp:butlast lst) (list value)) (list value))
+)
+
+(defun gtp:valid-route-p (ent / typ)
+  (if ent
+    (progn
+      (setq typ (cdr (assoc 0 (entget ent))))
+      (member typ '("LINE" "LWPOLYLINE" "POLYLINE"))
+    )
+    nil
+  )
+)
+
+(defun gtp:end-info (pts pick / p0 pN d0 dN adj dir ordered)
+  (setq p0 (car pts))
+  (setq pN (gtp:last-item pts))
+  (setq d0 (distance pick p0))
+  (setq dN (distance pick pN))
+  (if (<= d0 dN)
+    (progn
+      (setq adj (cadr pts))
+      (setq dir (gtp:vunit (gtp:vsub p0 adj)))
+      (setq ordered (reverse pts))
+      (list (cons 'end p0) (cons 'dir dir) (cons 'ordered ordered) (cons 'len (distance p0 adj)))
+    )
+    (progn
+      (setq adj (nth (- (length pts) 2) pts))
+      (setq dir (gtp:vunit (gtp:vsub pN adj)))
+      (setq ordered pts)
+      (list (cons 'end pN) (cons 'dir dir) (cons 'ordered ordered) (cons 'len (distance pN adj)))
+    )
+  )
+)
+
+(defun gtp:line-line-intersection (p1 u p2 v / w a b c d e den s t q1 q2)
+  (setq u (gtp:vunit u))
+  (setq v (gtp:vunit v))
+  (setq w (gtp:vsub p1 p2))
+  (setq a (gtp:dot u u))
+  (setq b (gtp:dot u v))
+  (setq c (gtp:dot v v))
+  (setq d (gtp:dot u w))
+  (setq e (gtp:dot v w))
+  (setq den (- (* a c) (* b b)))
+  (if (< (abs den) 1e-10)
+    nil
+    (progn
+      (setq s (/ (- (* b e) (* c d)) den))
+      (setq t (/ (- (* a e) (* b d)) den))
+      (setq q1 (gtp:vadd p1 (gtp:vscale u s)))
+      (setq q2 (gtp:vadd p2 (gtp:vscale v t)))
+      (list
+        (cons 'corner (mapcar '(lambda (x y) (/ (+ x y) 2.0)) q1 q2))
+        (cons 'gap (distance q1 q2))
+      )
+    )
+  )
+)
+
+(defun gtp:make-3d-polyline (pts layer / head)
+  (setq head
+    (entmakex
+      (list
+        '(0 . "POLYLINE")
+        '(100 . "AcDbEntity")
+        (cons 8 layer)
+        '(100 . "AcDb3dPolyline")
+        (cons 10 '(0.0 0.0 0.0))
+        '(66 . 1)
+        '(70 . 8)
+      )
+    )
+  )
+  (if head
+    (progn
+      (foreach p pts
+        (entmakex
+          (list
+            '(0 . "VERTEX")
+            '(100 . "AcDbEntity")
+            (cons 8 layer)
+            '(100 . "AcDbVertex")
+            '(100 . "AcDb3dPolylineVertex")
+            (cons 10 p)
+            '(70 . 32)
+          )
+        )
+      )
+      (entmakex (list '(0 . "SEQEND") '(100 . "AcDbEntity") (cons 8 layer)))
+      head
+    )
+  )
+)
+
+(defun gtp:miter-route-points (info1 info2 corner / a b)
+  (setq a (gtp:replace-last (cdr (assoc 'ordered info1)) corner))
+  (setq b (reverse (cdr (assoc 'ordered info2))))
+  (setq b (gtp:replace-first b corner))
+  (append a (cdr b))
+)
+
+; =============================================================================
+; COMMAND: GTPMITER
+; =============================================================================
+(defun c:GTPMITER (/ *error* old sel1 sel2 ent1 ent2 pick1 pick2 pts1 pts2 info1 info2 ll corner gap tol route newEnt ss ans)
+  (vl-load-com)
+  (defun *error* (msg)
+    (if old (setvar "CMDECHO" old))
+    (if (and msg (/= msg "Function cancelled") (/= msg "quit / exit abort"))
+      (princ (strcat "\nGTPMITER error: " msg))
+    )
+    (princ)
+  )
+
+  (setq old (getvar "CMDECHO"))
+  (setvar "CMDECHO" 0)
+  (gtp:layers)
+
+  (setq sel1 (entsel "\nSelect FIRST route near the end to connect: "))
+  (if sel1
+    (progn
+      (setq ent1 (car sel1))
+      (if (gtp:valid-route-p ent1)
+        (progn
+          (setq sel2 (entsel "\nSelect SECOND route near the end to connect: "))
+          (if (and sel2 (/= ent1 (car sel2)) (gtp:valid-route-p (car sel2)))
+            (progn
+              (setq ent2 (car sel2))
+              (setq pick1 (trans (cadr sel1) 1 0))
+              (setq pick2 (trans (cadr sel2) 1 0))
+              (setq pts1 (gtp:curve-points ent1))
+              (setq pts2 (gtp:curve-points ent2))
+              (if (and pts1 pts2 (>= (length pts1) 2) (>= (length pts2) 2))
+                (progn
+                  (setq info1 (gtp:end-info pts1 pick1))
+                  (setq info2 (gtp:end-info pts2 pick2))
+                  (setq ll
+                    (gtp:line-line-intersection
+                      (cdr (assoc 'end info1))
+                      (cdr (assoc 'dir info1))
+                      (cdr (assoc 'end info2))
+                      (cdr (assoc 'dir info2))
+                    )
+                  )
+                  (if ll
+                    (progn
+                      (setq corner (cdr (assoc 'corner ll)))
+                      (setq gap (cdr (assoc 'gap ll)))
+                      (setq tol
+                        (max
+                          1e-7
+                          (* 0.002 (max (cdr (assoc 'len info1)) (cdr (assoc 'len info2))))
+                        )
+                      )
+                      (if (<= gap tol)
+                        (progn
+                          (setq route (gtp:miter-route-points info1 info2 corner))
+                          (setq newEnt (gtp:make-3d-polyline route "GTP-PIPE-CENTRELINE"))
+                          (if newEnt
+                            (progn
+                              (princ
+                                (strcat
+                                  "\nMiter centreline created at ("
+                                  (rtos (car corner) 2 4) ", "
+                                  (rtos (cadr corner) 2 4) ", "
+                                  (rtos (caddr corner) 2 4) ")."
+                                )
+                              )
+                              (initget "Keep Delete")
+                              (setq ans (getkword "\nSource objects [Keep/Delete] <Keep>: "))
+                              (if (null ans) (setq ans "Keep"))
+                              (if (= ans "Delete")
+                                (progn (entdel ent1) (entdel ent2))
+                              )
+                              (setq ss (ssadd))
+                              (ssadd newEnt ss)
+                              (sssetfirst nil ss)
+                              (princ "\nNew centreline selected. Run GTPPIPE.")
+                            )
+                            (princ "\nCould not create joined 3D centreline.")
+                          )
+                        )
+                        (princ
+                          (strcat
+                            "\nThe two selected axes are skew in 3D. Closest gap = "
+                            (rtos gap 2 6)
+                            "."
+                          )
+                        )
+                      )
+                    )
+                    (princ "\nSelected route ends are parallel/nearly parallel; no miter intersection exists.")
+                  )
+                )
+                (princ "\nCould not read route vertices.")
+              )
+            )
+            (princ "\nSecond selection must be a different LINE/POLYLINE.")
+          )
+        )
+        (princ "\nFirst selection must be a LINE/POLYLINE.")
+      )
+    )
+    (princ "\nNothing selected.")
+  )
+
+  (setvar "CMDECHO" old)
+  (princ)
+)
+
+(defun c:GTPMITTER () (c:GTPMITER))
+
+(defun c:GTPHELP ()
+  (princ "\nCommands loaded: GTPPIPE, GTPMITER, GTPMITTER, GTPUNITS, GTPLAYER, GTPHELP.")
+  (princ)
+)
+
+(princ "\nGTP_DH_TOOLKIT.lsp loaded successfully.")
+(princ "\nCommands: GTPPIPE, GTPMITER (GTPMITTER), GTPUNITS, GTPLAYER, GTPHELP.")
 (princ)

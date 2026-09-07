@@ -1,0 +1,58 @@
+name: One-time valve stem scale fix
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/one-time-valve-stem-scale-fix.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scale valve stem minimum diameter with drawing units
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('GTP_DH_TOOLKIT_COMBINED.lsp')
+          text = path.read_text(encoding='utf-8')
+          old = '(setq stemDia (max 19.0 (* 0.12 bodyDia)))'
+          new = '(setq stemDia (max (gtp:mm 19.0) (* 0.12 bodyDia)))'
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'Expected exactly one unscaled valve stem diameter expression, found {count}.')
+          text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+          print('Patched valve stem minimum diameter: 19 mm now converts through gtp:mm.')
+          PY
+
+      - name: Static sanity check
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          s = Path('GTP_DH_TOOLKIT_COMBINED.lsp').read_text(encoding='utf-8')
+          assert '(setq stemDia (max (gtp:mm 19.0) (* 0.12 bodyDia)))' in s
+          assert '(setq stemDia (max 19.0 (* 0.12 bodyDia)))' not in s
+          print('Valve stem scaling static check passed.')
+          PY
+          git diff --check
+
+      - name: Commit canonical-file fix
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add GTP_DH_TOOLKIT_COMBINED.lsp
+          git commit -m 'Fix valve stem diameter scaling in non-mm drawings'
+          git push origin main

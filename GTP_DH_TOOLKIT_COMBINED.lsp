@@ -5,8 +5,8 @@
 ; APPLOAD THIS FILE.
 ;
 ; Loads the complete repository implementation in the required order, then
-; applies the final multi-component route bridge so GTPPIPE can generate pipe
-; around persisted longitudinal components instead of modelling through them.
+; applies the final multi-component route bridge and intelligent GTPPIPE session
+; so one route selection can be configured, populated with components, and built.
 ;
 ; A repository builder (tools/build_gtp_combined.py) can flatten the same
 ; source stack into a physically monolithic file when run in CI/local checkout.
@@ -24,6 +24,7 @@
     "GTP_Valve_Catalogue_Integration.lsp"
     "GTP_Component_Persistence_and_Fittings.lsp"
     "GTP_Combined_Final_Bridge.lsp"
+    "GTP_Smart_Pipe_Command.lsp"
   )
 )
 
@@ -86,9 +87,12 @@
 
   (if (= failed 0)
     (progn
-      (princ "\nFinal component-aware GTPPIPE integration is active.")
+      (princ "\nIntelligent component-aware GTPPIPE integration is active.")
       (if (fboundp 'c:GTPCOMBINEDTEST)
         (c:GTPCOMBINEDTEST)
+      )
+      (if (fboundp 'c:GTPSMARTTEST)
+        (c:GTPSMARTTEST)
       )
     )
     (princ "\nFix missing modules and run GTPCOMBINED again.")
@@ -98,5 +102,5 @@
 
 (c:GTPCOMBINED)
 
-(princ "\nGTP_DH_TOOLKIT_COMBINED loaded. Use GTPPIPE for 3D pipe generation, GTPHELP for commands.")
+(princ "\nGTP_DH_TOOLKIT_COMBINED loaded. Run GTPPIPE for the intelligent 3D pipe session, GTPHELP for commands.")
 (princ)

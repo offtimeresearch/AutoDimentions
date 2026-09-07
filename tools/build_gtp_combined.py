@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import re
 from pathlib import Path
 import sys
 
@@ -133,6 +134,17 @@ def build_text() -> str:
     for old, new in FIXUPS.items():
         out = out.replace(old, new)
 
+    # Step 6 predates the final component factory signature and its standalone
+    # fitting commands omitted the explicit component type argument. Patch only
+    # those known calls in the generated monolith so legacy commands remain
+    # compatible with GTP_Component_Architecture.lsp.
+    for kind in ("TEE", "REDUCER", "BRANCH", "END_CAP"):
+        out = re.sub(
+            rf'(\(gtp:component-next-id "{kind}"\)\s+)(flow dn series)',
+            rf'\1"{kind}" \2',
+            out,
+        )
+
     return out
 
 
@@ -205,6 +217,16 @@ def validate_lisp(text: str) -> None:
 
     if "GTPPIPE now runs one-route/one-setup component-aware modelling." not in text:
         raise SystemExit("Intelligent GTPPIPE override is missing")
+
+    for kind in ("TEE", "REDUCER", "BRANCH", "END_CAP"):
+        bad = re.search(
+            rf'\(gtp:component-next-id "{kind}"\)\s+flow dn series',
+            text,
+        )
+        if bad:
+            raise SystemExit(
+                f"Legacy {kind} standalone command still has the old component factory signature"
+            )
 
 
 def main() -> int:

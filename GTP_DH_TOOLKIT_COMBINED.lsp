@@ -675,7 +675,7 @@
 ; -----------------------------------------------------------------------------
 
 (defun gtp:component-make
-  (id type system dn series position direction up length catalogue options)
+  (id type system dn series position direction up componentLength catalogue options)
   (list
     (cons 'id id)
     (cons 'type type)
@@ -685,7 +685,7 @@
     (cons 'position position)
     (cons 'direction (gtp:component-unit direction))
     (cons 'up (gtp:component-unit up))
-    (cons 'length length)
+    (cons 'length componentLength)
     (cons 'catalogue catalogue)
     (cons 'options options)
   )
@@ -833,16 +833,16 @@
 )
 
 (defun gtp:make-valve-component
-  (id system dn series position direction up length catalogue options)
+  (id system dn series position direction up componentLength catalogue options)
   (gtp:component-make
-    id "VALVE" system dn series position direction up length catalogue options
+    id "VALVE" system dn series position direction up componentLength catalogue options
   )
 )
 
 (defun gtp:make-generic-component
-  (id type system dn series position direction up length catalogue options)
+  (id type system dn series position direction up componentLength catalogue options)
   (gtp:component-make
-    id type system dn series position direction up length catalogue options
+    id type system dn series position direction up componentLength catalogue options
   )
 )
 

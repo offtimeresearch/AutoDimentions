@@ -15,6 +15,7 @@ on:
       - 'GTP_Smart_Pipe_Command.lsp'
       - 'GTP_Variable_DN_Route.lsp'
       - 'GTP_Variable_DN_Fixes.lsp'
+      - 'GTP_Catalogue_Corrections.lsp'
       - 'tools/build_gtp_combined.py'
       - '.github/workflows/build-gtp-combined.yml'
   workflow_dispatch:

@@ -1,0 +1,100 @@
+name: One-time AutoLISP length shadow fix
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/one-time-length-shadow-fix.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Rename LENGTH parameters that shadow AutoLISP LENGTH
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('GTP_DH_TOOLKIT_COMBINED.lsp')
+          text = path.read_text(encoding='utf-8')
+
+          replacements = [
+              (
+                  '''(defun gtp:component-make\n  (id type system dn series position direction up length catalogue options)''',
+                  '''(defun gtp:component-make\n  (id type system dn series position direction up componentLength catalogue options)'''
+              ),
+              (
+                  '''    (cons 'length length)''',
+                  '''    (cons 'length componentLength)'''
+              ),
+              (
+                  '''(defun gtp:make-valve-component\n  (id system dn series position direction up length catalogue options)\n  (gtp:component-make\n    id "VALVE" system dn series position direction up length catalogue options\n  )\n)''',
+                  '''(defun gtp:make-valve-component\n  (id system dn series position direction up componentLength catalogue options)\n  (gtp:component-make\n    id "VALVE" system dn series position direction up componentLength catalogue options\n  )\n)'''
+              ),
+              (
+                  '''(defun gtp:make-generic-component\n  (id type system dn series position direction up length catalogue options)\n  (gtp:component-make\n    id type system dn series position direction up length catalogue options\n  )\n)''',
+                  '''(defun gtp:make-generic-component\n  (id type system dn series position direction up componentLength catalogue options)\n  (gtp:component-make\n    id type system dn series position direction up componentLength catalogue options\n  )\n)'''
+              ),
+          ]
+
+          changed = 0
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'Expected exactly one match, got {count} for:\n{old}')
+              text = text.replace(old, new, 1)
+              changed += 1
+
+          # Runtime guard for this exact failure class.
+          forbidden = [
+              '(id type system dn series position direction up length catalogue options)',
+              '(id system dn series position direction up length catalogue options)',
+              'id "VALVE" system dn series position direction up length catalogue options',
+              'id type system dn series position direction up length catalogue options',
+          ]
+          for token in forbidden:
+              if token in text:
+                  raise SystemExit(f'Unsafe LENGTH parameter/call remains: {token}')
+
+          if '(cons \'length componentLength)' not in text:
+              raise SystemExit('Component length storage was not patched.')
+
+          path.write_text(text, encoding='utf-8')
+          print(f'Applied {changed} targeted replacements.')
+          PY
+
+      - name: Static sanity check
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          s = Path('GTP_DH_TOOLKIT_COMBINED.lsp').read_text(encoding='utf-8')
+          assert '(defun gtp:component-make' in s
+          assert 'componentLength catalogue options' in s
+          assert '(cons \'length componentLength)' in s
+          assert 'GTPVALVE' in s and 'GTPPIPE' in s
+          print('Static checks passed.')
+          PY
+          git diff --check
+
+      - name: Commit canonical-file fix
+        shell: bash
+        run: |
+          if git diff --quiet -- GTP_DH_TOOLKIT_COMBINED.lsp; then
+            echo 'Canonical GTP file already patched.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add GTP_DH_TOOLKIT_COMBINED.lsp
+          git commit -m 'Fix AutoLISP LENGTH shadowing in component creation'
+          git push origin main

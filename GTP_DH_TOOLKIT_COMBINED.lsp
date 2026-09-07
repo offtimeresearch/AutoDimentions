@@ -54,6 +54,17 @@
 (vl-load-com)
 
 ; -----------------------------------------------------------------------------
+; AUTOLISP FUNCTION-AVAILABILITY COMPATIBILITY
+; -----------------------------------------------------------------------------
+; AutoLISP does not provide Common Lisp FBOUNDP.  Use ATOMS-FAMILY to test
+; whether a named function/command symbol is currently defined without calling it.
+(defun gtp:function-defined-p (sym / name hit)
+  (setq name (vl-symbol-name sym))
+  (setq hit (car (atoms-family 0 (list name))))
+  (if hit T nil)
+)
+
+; -----------------------------------------------------------------------------
 ; CATALOGUE DATA - millimetres
 ; -----------------------------------------------------------------------------
 (setq *gtp-pipe-db*
@@ -1410,7 +1421,7 @@
   )
   (setq old (getvar "CMDECHO"))
   (setvar "CMDECHO" 0)
-  (if (not (fboundp 'gtp:make-valve-component))
+  (if (not (gtp:function-defined-p 'gtp:make-valve-component))
     (princ "\nLoad GTP_Component_Architecture.lsp first.")
     (progn
       (gtp:valve-layers)
@@ -2164,8 +2175,8 @@
   (setq old (getvar "CMDECHO"))
   (setvar "CMDECHO" 0)
 
-  (if (not (and (fboundp 'gtp:make-valve-component)
-                (fboundp 'gtp:curve-point-direction)))
+  (if (not (and (gtp:function-defined-p 'gtp:make-valve-component)
+                (gtp:function-defined-p 'gtp:curve-point-direction)))
     (princ "\nLoad the Step 3 valve component file and the component architecture first.")
     (progn
       (gtp:valve-layers)
@@ -3353,7 +3364,7 @@
   (princ "\n GTP COMBINED TOOLKIT TEST")
   (princ "\n========================================")
   (foreach item checks
-    (if (fboundp (cadr item))
+    (if (gtp:function-defined-p (cadr item))
       (princ (strcat "\n[OK] " (car item)))
       (progn
         (setq ok nil)
@@ -3361,7 +3372,7 @@
       )
     )
   )
-  (if (fboundp 'gtp:model-corner-route)
+  (if (gtp:function-defined-p 'gtp:model-corner-route)
     (princ "\n[OK] Final multi-component route modeller active.")
     (progn (setq ok nil) (princ "\n[FAIL] Final route modeller missing."))
   )
@@ -3464,10 +3475,10 @@
 
 (defun gtp:smart-register-component (component)
   (cond
-    ((and component (fboundp 'gtp:register-persistent-component))
+    ((and component (gtp:function-defined-p 'gtp:register-persistent-component))
       (gtp:register-persistent-component component)
     )
-    ((and component (fboundp 'gtp:component-registry-add))
+    ((and component (gtp:function-defined-p 'gtp:component-registry-add))
       (gtp:component-registry-add component)
     )
     (T component)
@@ -3475,7 +3486,7 @@
 )
 
 (defun gtp:smart-component-id (prefix)
-  (if (fboundp 'gtp:component-next-id)
+  (if (gtp:function-defined-p 'gtp:component-next-id)
     (gtp:component-next-id prefix)
     (strcat prefix "-" (itoa (1+ (length *gtp-component-registry*))))
   )
@@ -4008,7 +4019,7 @@
         (if comp (setq added (1+ added)))
       )
       ((= choice "Status")
-        (if (fboundp 'c:GTPCOMPONENTS)
+        (if (gtp:function-defined-p 'c:GTPCOMPONENTS)
           (c:GTPCOMPONENTS)
           (princ
             (strcat
@@ -4135,7 +4146,7 @@
               (if (= action "Build")
                 (progn
                   (gtp:smart-generate pts dn carrier casing mode style)
-                  (if (fboundp 'gtp:persist-all-components)
+                  (if (gtp:function-defined-p 'gtp:persist-all-components)
                     (gtp:persist-all-components)
                   )
                   (princ
@@ -4184,7 +4195,7 @@
       gtp:smart-component-menu
       gtp:smart-generate
       c:GTPPIPE)
-    (if (not (fboundp fn))
+    (if (not (gtp:function-defined-p fn))
       (progn
         (setq ok nil)
         (princ (strcat "\n[FAIL] " (vl-princ-to-string fn)))
@@ -5132,7 +5143,7 @@
         (gtp:vcdn-print-zones pts startDn)
       )
       ((= choice "Status")
-        (if (fboundp 'c:GTPCOMPONENTS) (c:GTPCOMPONENTS))
+        (if (gtp:function-defined-p 'c:GTPCOMPONENTS) (c:GTPCOMPONENTS))
         (gtp:vcdn-print-zones pts startDn)
       )
     )
@@ -5244,7 +5255,7 @@
                   (setq result (gtp:vcdn-generate pts startDn series mode style))
                   (if result
                     (progn
-                      (if (fboundp 'gtp:persist-all-components)
+                      (if (gtp:function-defined-p 'gtp:persist-all-components)
                         (gtp:persist-all-components)
                       )
                       (princ
@@ -5290,7 +5301,7 @@
       gtp:vcdn-component-menu
       gtp:vcdn-generate
       c:GTPPIPE)
-    (if (not (fboundp fn))
+    (if (not (gtp:function-defined-p fn))
       (progn
         (setq ok nil)
         (princ (strcat "\n[FAIL] " (vl-princ-to-string fn)))

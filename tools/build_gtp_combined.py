@@ -4,7 +4,7 @@
 The repository evolved as a stable geometry engine plus component integration
 steps. This builder preserves that architecture while producing one APPLOAD-able
 LSP file. Later integration modules intentionally override earlier function
-names, matching GTP_DH_TOOLKIT_INTEGRATED.lsp load order.
+names, matching the required runtime load order.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "GTP_DH_TOOLKIT_COMBINED.lsp"
 CORE = ROOT / "GTP_DH_TOOLKIT.lsp"
 BRIDGE = ROOT / "GTP_Combined_Final_Bridge.lsp"
+SMART = ROOT / "GTP_Smart_Pipe_Command.lsp"
 
 MODULES = [
     ROOT / "GTP_Component_Architecture.lsp",
@@ -41,6 +42,7 @@ FIXUPS = {
 
 REQUIRED_COMMANDS = [
     "GTPPIPE",
+    "GTPPIPESMART",
     "GTPMITER",
     "GTPMITTER",
     "GTPUNITS",
@@ -56,6 +58,7 @@ REQUIRED_COMMANDS = [
     "GTPCOMPONENTRELOAD",
     "GTPCOMPONENTSAVE",
     "GTPCOMBINEDTEST",
+    "GTPSMARTTEST",
     "GTPHELP",
 ]
 
@@ -88,18 +91,22 @@ def build_text() -> str:
     core_full = read(CORE)
     core_geometry = strip_legacy_master_component_block(core_full)
 
-    sources: list[tuple[str, str]] = [(CORE.name + " [geometry core only]", core_geometry)]
+    sources: list[tuple[str, str]] = [
+        (CORE.name + " [geometry core only]", core_geometry)
+    ]
     for module in MODULES:
         sources.append((module.name, read(module)))
     sources.append((BRIDGE.name, read(BRIDGE)))
+    sources.append((SMART.name, read(SMART)))
 
     manifest = [
         "; GTP_DH_TOOLKIT_COMBINED.LSP",
         "; =============================================================================",
         "; SELF-CONTAINED GENERATED BUILD - APPLOAD ONLY THIS FILE",
         ";",
-        "; Generated from the proven GTP geometry core plus component Steps 1-6",
-        "; and the final multi-component route bridge. Do not hand-edit this file;",
+        "; Generated from the proven GTP geometry core, component Steps 1-6,",
+        "; the final multi-component route bridge, and the intelligent GTPPIPE",
+        "; single-session workflow. Do not hand-edit this generated file;",
         "; edit the source modules and run tools/build_gtp_combined.py instead.",
         ";",
         "; Source manifest (SHA-256 of included text):",
@@ -110,7 +117,8 @@ def build_text() -> str:
         [
             ";",
             "; Architecture:",
-            ";   route -> cleanup -> elbow footprints -> persistent component footprints",
+            ";   route -> one-time setup -> component placement menu -> route cleanup",
+            ";   -> elbow footprints -> persistent component footprints",
             ";   -> remaining straight intervals -> stock-length spools -> 3D solids",
             "; =============================================================================",
             "",
@@ -194,6 +202,9 @@ def validate_lisp(text: str) -> None:
 
     if "Final multi-component route modeller active." not in text:
         raise SystemExit("Final combined route bridge is missing")
+
+    if "GTPPIPE now runs one-route/one-setup component-aware modelling." not in text:
+        raise SystemExit("Intelligent GTPPIPE override is missing")
 
 
 def main() -> int:

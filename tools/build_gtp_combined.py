@@ -22,6 +22,7 @@ BRIDGE = ROOT / "GTP_Combined_Final_Bridge.lsp"
 SMART = ROOT / "GTP_Smart_Pipe_Command.lsp"
 VARIABLE_DN = ROOT / "GTP_Variable_DN_Route.lsp"
 VARIABLE_DN_FIXES = ROOT / "GTP_Variable_DN_Fixes.lsp"
+CATALOGUE_CORRECTIONS = ROOT / "GTP_Catalogue_Corrections.lsp"
 
 MODULES = [
     ROOT / "GTP_Component_Architecture.lsp",
@@ -63,6 +64,7 @@ REQUIRED_COMMANDS = [
     "GTPCOMBINEDTEST",
     "GTPSMARTTEST",
     "GTPVARDNTEST",
+    "GTPCATALOGUETEST",
     "GTPHELP",
 ]
 
@@ -104,6 +106,9 @@ def build_text() -> str:
     sources.append((SMART.name, read(SMART)))
     sources.append((VARIABLE_DN.name, read(VARIABLE_DN)))
     sources.append((VARIABLE_DN_FIXES.name, read(VARIABLE_DN_FIXES)))
+    # Catalogue corrections load last by design. They are the authoritative
+    # runtime layer for values verified against the uploaded ISOPLUS 11/2024 PDF.
+    sources.append((CATALOGUE_CORRECTIONS.name, read(CATALOGUE_CORRECTIONS)))
 
     manifest = [
         "; GTP_DH_TOOLKIT_COMBINED.LSP",
@@ -112,9 +117,9 @@ def build_text() -> str:
         ";",
         "; Generated from the proven GTP geometry core, component Steps 1-6,",
         "; the final multi-component route bridge, intelligent GTPPIPE session,",
-        "; and reducer-driven variable-DN route generation. Do not hand-edit",
-        "; this generated file; edit the source modules and run",
-        "; tools/build_gtp_combined.py instead.",
+        "; reducer-driven variable-DN generation, and the authoritative ISOPLUS",
+        "; 11/2024 catalogue correction layer. Do not hand-edit this generated",
+        "; file; edit the source modules and run tools/build_gtp_combined.py.",
         ";",
         "; Source manifest (SHA-256 of included text):",
     ]
@@ -126,7 +131,8 @@ def build_text() -> str:
             "; Architecture:",
             ";   route -> one-time setup -> reducer DN transitions -> component menu",
             ";   -> route cleanup -> local-DN elbow footprints -> component footprints",
-            ";   -> local-DN straight intervals -> stock-length spools -> 3D solids",
+            ";   -> local-DN straight intervals -> catalogue stock-length spools -> 3D solids",
+            ";   -> final ISOPLUS 11/2024 verified data/function overrides",
             "; =============================================================================",
             "",
         ]
@@ -229,6 +235,22 @@ def validate_lisp(text: str) -> None:
 
     if "gtp:vcdn-model-route" not in text or "gtp:vcdn-dn-at-station" not in text:
         raise SystemExit("Variable-DN route state functions are missing")
+
+    if "GTP catalogue correction layer active: ISOPLUS Product Catalogue 11/2024." not in text:
+        raise SystemExit("ISOPLUS 11/2024 catalogue correction layer is missing")
+
+    # Catalogue correction signatures that must survive the generated build.
+    required_catalogue_snippets = [
+        "'(26.9 33.7 90 90 110 110 125 125 1500)",
+        "'(48.3 110 125 125 125 140 140 110 494 19 1510)",
+        "'(219.1 560 630 630 670 710 800 180 210 800 383 27 2200)",
+        "(20   6000 12000 12000)",
+        "(100 16000 16000 16000)",
+        "gtp:catalogue-weldable-branch-model",
+    ]
+    for snippet in required_catalogue_snippets:
+        if snippet not in text:
+            raise SystemExit(f"Missing catalogue correction signature: {snippet}")
 
     for kind in ("TEE", "REDUCER", "BRANCH", "END_CAP"):
         bad = re.search(

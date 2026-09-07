@@ -1,0 +1,48 @@
+name: Build GTP Combined Toolkit
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'GTP_DH_TOOLKIT.lsp'
+      - 'GTP_Component_Architecture.lsp'
+      - 'GTP_Elbow_Component_Integration.lsp'
+      - 'GTP_Valve_Component.lsp'
+      - 'GTP_Valve_Aware_Pipe_Integration.lsp'
+      - 'GTP_Valve_Catalogue_Integration.lsp'
+      - 'GTP_Component_Persistence_and_Fittings.lsp'
+      - 'GTP_Combined_Final_Bridge.lsp'
+      - 'tools/build_gtp_combined.py'
+      - '.github/workflows/build-gtp-combined.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build self-contained GTP toolkit
+        run: python3 tools/build_gtp_combined.py
+
+      - name: Validate generated toolkit
+        run: |
+          python3 tools/build_gtp_combined.py --check
+          git diff --check
+
+      - name: Commit generated combined toolkit
+        run: |
+          if git diff --quiet -- GTP_DH_TOOLKIT_COMBINED.lsp; then
+            echo "Combined toolkit already current"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add GTP_DH_TOOLKIT_COMBINED.lsp
+          git commit -m 'Build combined GTP AutoCAD toolkit'
+          git push origin main

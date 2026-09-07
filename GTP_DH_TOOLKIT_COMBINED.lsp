@@ -2026,7 +2026,7 @@
 )
 
 (defun gtp:make-valve-stem (origin up bodyDia height layer / stemDia stemTop)
-  (setq stemDia (max 19.0 (* 0.12 bodyDia)))
+  (setq stemDia (max (gtp:mm 19.0) (* 0.12 bodyDia)))
   (setq stemTop
     (gtp:vadd origin (gtp:vscale up height))
   )

@@ -12,6 +12,7 @@ on:
       - 'GTP_Valve_Catalogue_Integration.lsp'
       - 'GTP_Component_Persistence_and_Fittings.lsp'
       - 'GTP_Combined_Final_Bridge.lsp'
+      - 'GTP_Smart_Pipe_Command.lsp'
       - 'tools/build_gtp_combined.py'
       - '.github/workflows/build-gtp-combined.yml'
   workflow_dispatch:

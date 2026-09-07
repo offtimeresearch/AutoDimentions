@@ -1421,6 +1421,7 @@
   )
   (setq old (getvar "CMDECHO"))
   (setvar "CMDECHO" 0)
+  (gtp:setup-units)
   (if (not (gtp:function-defined-p 'gtp:make-valve-component))
     (princ "\nLoad GTP_Component_Architecture.lsp first.")
     (progn
@@ -2174,6 +2175,7 @@
 
   (setq old (getvar "CMDECHO"))
   (setvar "CMDECHO" 0)
+  (gtp:setup-units)
 
   (if (not (and (gtp:function-defined-p 'gtp:make-valve-component)
                 (gtp:function-defined-p 'gtp:curve-point-direction)))
@@ -2735,6 +2737,7 @@
   )
   (setq old (getvar "CMDECHO"))
   (setvar "CMDECHO" 0)
+  (gtp:setup-units)
   (gtp:ensure-layer "GTP-FITTING-BODY" 6)
   (setq sel (entsel "\nSelect main route LINE / POLYLINE: "))
   (if sel
@@ -2814,6 +2817,7 @@
   )
   (setq old (getvar "CMDECHO"))
   (setvar "CMDECHO" 0)
+  (gtp:setup-units)
   (gtp:ensure-layer "GTP-FITTING-BODY" 6)
   (initget "SINGLE TWIN")
   (setq family (getkword "\nReducer type [SINGLE/TWIN] <SINGLE>: "))
@@ -2887,6 +2891,7 @@
   )
   (setq old (getvar "CMDECHO"))
   (setvar "CMDECHO" 0)
+  (gtp:setup-units)
   (gtp:ensure-layer "GTP-FITTING-BODY" 6)
   (setq sel (entsel "\nSelect main route LINE / POLYLINE: "))
   (if sel
@@ -2959,6 +2964,7 @@
   )
   (setq old (getvar "CMDECHO"))
   (setvar "CMDECHO" 0)
+  (gtp:setup-units)
   (gtp:ensure-layer "GTP-FITTING-BODY" 6)
   (setq sel (entsel "\nSelect route LINE / POLYLINE for end cap: "))
   (if sel

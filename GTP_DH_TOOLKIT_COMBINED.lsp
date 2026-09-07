@@ -2762,7 +2762,7 @@
                           (setq comp
                             (gtp:make-generic-component
                               (gtp:component-next-id "TEE")
-                              flow dn series (car info) (cadr info) up
+                              "TEE" flow dn series (car info) (cadr info) up
                               bodyLen catalogue
                               (list (cons 'branch-direction bdir))
                             )
@@ -2839,7 +2839,7 @@
                   (setq comp
                     (gtp:make-generic-component
                       (gtp:component-next-id "REDUCER")
-                      flow dn series (car info) (cadr info) '(0.0 0.0 1.0)
+                      "REDUCER" flow dn series (car info) (cadr info) '(0.0 0.0 1.0)
                       1500.0 catalogue nil
                     )
                   )
@@ -2908,7 +2908,7 @@
                       (setq comp
                         (gtp:make-generic-component
                           (gtp:component-next-id "BRANCH")
-                          flow dn series (car info) (cadr info) '(0.0 0.0 1.0)
+                          "BRANCH" flow dn series (car info) (cadr info) '(0.0 0.0 1.0)
                           *gtp-branch-joint-length-mm* catalogue nil
                         )
                       )
@@ -2980,7 +2980,7 @@
                   (setq comp
                     (gtp:make-generic-component
                       (gtp:component-next-id "END_CAP")
-                      flow dn series endpoint dir '(0.0 0.0 1.0)
+                      "END_CAP" flow dn series endpoint dir '(0.0 0.0 1.0)
                       thickness catalogue nil
                     )
                   )

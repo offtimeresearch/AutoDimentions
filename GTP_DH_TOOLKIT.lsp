@@ -61,7 +61,7 @@
 (setq *gtp-end-cutback-mm* 220.0)
 (setq *gtp-standard-bend-radius-factor* 3.0)
 (setq *gtp-min-elbow-straight-mm* 50.0)
-(setq *gtp-straight-angle-tol-deg* 0.5)
+(setq *gtp-straight-angle-tol-deg* 2.0)
 (setq *gtp-duplicate-point-tol* 1e-8)
 (setq *gtp-mm-to-du* 1.0)
 (setq *gtp-drawing-unit-name* "millimetres")
@@ -142,7 +142,6 @@
     (setq lay (vla-Add lays name))
   )
   (if color (vla-put-Color lay color))
-  ; Make sure newly generated geometry cannot be hidden by a previous layer state.
   (vl-catch-all-apply 'vla-put-LayerOn (list lay :vlax-true))
   (vl-catch-all-apply 'vla-put-Freeze (list lay :vlax-false))
   (vl-catch-all-apply 'vla-put-Lock (list lay :vlax-false))
@@ -333,9 +332,6 @@
 )
 
 (defun gtp:model-arc (center t1 normal tangent radius phi dia layer / obj fallback)
-  ; Protect the COMPLETE native sweep operation.  AutoCAD can reject either
-  ; the temporary arc/profile construction or the final path sweep depending
-  ; on drawing units and the orientation of a 3D bend.
   (setq obj
     (vl-catch-all-apply
       'gtp:sweep-arc
@@ -345,9 +341,6 @@
   (if (and obj (not (vl-catch-all-error-p obj)))
     (list obj)
     (progn
-      ; Keep GTPPIPE running when the ActiveX sweep is unavailable.  The
-      ; fallback is deliberately caught too, so one bad bend cannot cancel
-      ; all otherwise-valid straight pipe solids.
       (setq fallback
         (vl-catch-all-apply
           'gtp:segmented-arc
@@ -443,12 +436,6 @@
       (setq leg0 (gtp:mm (gtp:elbow-leg-mm dn style)))
       (setq maxleg (min (* 0.45 (distance prev vertex)) (* 0.45 (distance vertex next))))
       (setq leg (min leg0 maxleg))
-      ; The Isoplus table gives the complete equal leg length L, measured from
-      ; the theoretical corner to each fitting end.  It is NOT the bend radius.
-      ; Use the catalogue's normal 3D bend as the preferred centre-line radius,
-      ; then retain a real straight end inside L.  The previous implementation
-      ; invented a 1.5D/0.6-casing radius and could subsequently force it below
-      ; the casing radius, producing visibly tight or failed elbow sweeps.
       (setq desiredR (* *gtp-standard-bend-radius-factor* carrier))
       (setq minR (* 0.55 casing))
       (setq minStraight
@@ -466,35 +453,30 @@
         )
       )
       (setq radius (min desiredR maxR))
-
-      ; A swept circular casing cannot make a valid solid when its centre-line
-      ; radius is smaller than approximately half its outside diameter.
-      ; If the selected route is too short, omit this elbow instead of creating
-      ; corrupt/folded solids.  The caller will leave the route as straight runs.
       (if (< radius minR)
         nil
         (progn
-      (setq tanDist (* radius tang))
-      (setq fs (gtp:vadd vertex (gtp:vscale d1 (- leg))))
-      (setq fe (gtp:vadd vertex (gtp:vscale d2 leg)))
-      (setq t1 (gtp:vadd vertex (gtp:vscale d1 (- tanDist))))
-      (setq t2 (gtp:vadd vertex (gtp:vscale d2 tanDist)))
-      (setq inward (gtp:vunit (gtp:cross normal d1)))
-      (setq center (gtp:vadd t1 (gtp:vscale inward radius)))
-      (list
-        (cons 'radius radius)
-        (cons 'phi phi)
-        (cons 'deg deg)
-        (cons 'd1 d1)
-        (cons 'd2 d2)
-        (cons 'normal normal)
-        (cons 'start fs)
-        (cons 'tan1 t1)
-        (cons 'center center)
-        (cons 'tan2 t2)
-        (cons 'end fe)
-        (cons 'clipped (< leg (- leg0 1e-8)))
-      )
+          (setq tanDist (* radius tang))
+          (setq fs (gtp:vadd vertex (gtp:vscale d1 (- leg))))
+          (setq fe (gtp:vadd vertex (gtp:vscale d2 leg)))
+          (setq t1 (gtp:vadd vertex (gtp:vscale d1 (- tanDist))))
+          (setq t2 (gtp:vadd vertex (gtp:vscale d2 tanDist)))
+          (setq inward (gtp:vunit (gtp:cross normal d1)))
+          (setq center (gtp:vadd t1 (gtp:vscale inward radius)))
+          (list
+            (cons 'radius radius)
+            (cons 'phi phi)
+            (cons 'deg deg)
+            (cons 'd1 d1)
+            (cons 'd2 d2)
+            (cons 'normal normal)
+            (cons 'start fs)
+            (cons 'tan1 t1)
+            (cons 'center center)
+            (cons 'tan2 t2)
+            (cons 'end fe)
+            (cons 'clipped (< leg (- leg0 1e-8)))
+          )
         )
       )
     )
@@ -631,25 +613,16 @@
       (setq out (list (car cleaned)))
       (setq i 1)
       (while (< i (1- n))
-        ; Use the original adjacent triple. This is deliberately simple and
-        ; avoids allowing a previously removed point to affect later testing.
         (setq prev (nth (1- i) cleaned))
         (setq cur  (nth i cleaned))
         (setq nxt  (nth (1+ i) cleaned))
         (setq ang (gtp:route-turn-angle-deg prev cur nxt))
-
         (if (<= ang *gtp-straight-angle-tol-deg*)
           (setq straightRemoved (1+ straightRemoved))
           (setq out (append out (list cur)))
         )
         (setq i (1+ i))
       )
-      ; NOTE: AutoLISP's (last lst) already returns the last ELEMENT of lst
-      ; (unlike Common Lisp, which returns a one-item sublist). Since each
-      ; element of `cleaned` is itself a 3D point list, applying (car ...)
-      ; on top of (last cleaned) incorrectly stripped the final point down
-      ; to just its X coordinate (a bare number), which then crashed later
-      ; vector math with "bad argument type: listp <number>".
       (setq out (append out (list (last cleaned))))
       (list out duplicateRemoved straightRemoved)
     )
@@ -826,9 +799,6 @@
 ; -----------------------------------------------------------------------------
 ; MITER HELPERS
 ; -----------------------------------------------------------------------------
-; Same (last lst) semantics as noted above in gtp:simplify-route-points:
-; AutoLISP's (last lst) already returns the last element (a point), so no
-; extra (car ...) is needed/wanted here.
 (defun gtp:last-item (lst) (last lst))
 
 (defun gtp:butlast (lst / out)
@@ -968,7 +938,6 @@
 ; =============================================================================
 (defun c:GTPMITER (/ *error* old sel1 sel2 ent1 ent2 pick1 pick2 pts1 pts2 info1 info2 ll corner gap tol route newEnt ss ans)
   (vl-load-com)
-
   (defun *error* (msg)
     (if old (setvar "CMDECHO" old))
     (if (and msg (/= msg "Function cancelled") (/= msg "quit / exit abort"))
@@ -976,11 +945,9 @@
     )
     (princ)
   )
-
   (setq old (getvar "CMDECHO"))
   (setvar "CMDECHO" 0)
   (gtp:layers)
-
   (setq sel1 (entsel "\nSelect FIRST route near the end to connect: "))
   (if sel1
     (progn
@@ -995,7 +962,6 @@
               (setq pick2 (trans (cadr sel2) 1 0))
               (setq pts1 (gtp:curve-points ent1))
               (setq pts2 (gtp:curve-points ent2))
-
               (if (and pts1 pts2 (>= (length pts1) 2) (>= (length pts2) 2))
                 (progn
                   (setq info1 (gtp:end-info pts1 pick1))
@@ -1008,7 +974,6 @@
                       (cdr (assoc 'dir info2))
                     )
                   )
-
                   (if ll
                     (progn
                       (setq corner (cdr (assoc 'corner ll)))
@@ -1024,12 +989,10 @@
                           )
                         )
                       )
-
                       (if (<= gap tol)
                         (progn
                           (setq route (gtp:miter-route-points info1 info2 corner))
                           (setq newEnt (gtp:make-3d-polyline route "GTP-PIPE-CENTRELINE"))
-
                           (if newEnt
                             (progn
                               (princ
@@ -1054,12 +1017,7 @@
                             (princ "\nCould not create joined 3D centreline.")
                           )
                         )
-                        (princ
-                          (strcat
-                            "\nThe two selected axes are skew in 3D. Closest gap = "
-                            (rtos gap 2 6) "."
-                          )
-                        )
+                        (princ (strcat "\nThe two selected axes are skew in 3D. Closest gap = " (rtos gap 2 6) "."))
                       )
                     )
                     (princ "\nSelected route ends are parallel/nearly parallel; no miter intersection exists.")
@@ -1076,18 +1034,628 @@
     )
     (princ "\nNothing selected.")
   )
-
   (setvar "CMDECHO" old)
   (princ)
 )
 
 (defun c:GTPMITTER () (c:GTPMITER))
 
+; =============================================================================
+; MASTER COMPONENT INTEGRATION
+; GTP_DH_TOOLKIT.lsp remains the only load file.
+; =============================================================================
+
+(setq *gtp-component-next-id* 1)
+(setq *gtp-components* '())
+
+(defun gtp:component-get (item key) (cdr (assoc key item)))
+(defun gtp:component-make (type system dn series position direction length catalogue options)
+  (list
+    (cons 'id *gtp-component-next-id*)
+    (cons 'type type)
+    (cons 'system system)
+    (cons 'dn dn)
+    (cons 'series series)
+    (cons 'position position)
+    (cons 'direction (gtp:vunit direction))
+    (cons 'length length)
+    (cons 'catalogue catalogue)
+    (cons 'options options)
+  )
+)
+(defun gtp:component-register (comp)
+  (setq *gtp-components* (append *gtp-components* (list comp)))
+  (setq *gtp-component-next-id* (1+ *gtp-component-next-id*))
+  comp
+)
+(defun gtp:component-find (id / out c)
+  (setq out nil)
+  (foreach c *gtp-components*
+    (if (= (gtp:component-get c 'id) id) (setq out c))
+  )
+  out
+)
+(defun gtp:components-by-type (type / out c)
+  (setq out '())
+  (foreach c *gtp-components*
+    (if (= (gtp:component-get c 'type) type) (setq out (cons c out)))
+  )
+  (reverse out)
+)
+
+(defun gtp:curve-point-safe (ent pick / r p)
+  (setq r (vl-catch-all-apply 'vlax-curve-getClosestPointTo (list ent pick)))
+  (if (vl-catch-all-error-p r) nil (setq p r))
+  p
+)
+
+(defun gtp:curve-tangent-safe (ent p / par d)
+  (setq par (vl-catch-all-apply 'vlax-curve-getParamAtPoint (list ent p)))
+  (if (vl-catch-all-error-p par)
+    '(1.0 0.0 0.0)
+    (progn
+      (setq d (vl-catch-all-apply 'vlax-curve-getFirstDeriv (list ent par)))
+      (if (or (vl-catch-all-error-p d) (null d) (< (gtp:vmag d) 1e-12))
+        '(1.0 0.0 0.0)
+        (gtp:vunit d)
+      )
+    )
+  )
+)
+
+(defun gtp:axis-matrix-start (p1 p2 / z ref x y)
+  (setq z (gtp:vunit (gtp:vsub p2 p1)))
+  (if (> (abs (caddr z)) 0.999)
+    (setq ref '(0.0 1.0 0.0))
+    (setq ref '(0.0 0.0 1.0))
+  )
+  (setq x (gtp:vunit (gtp:cross ref z)))
+  (setq y (gtp:cross z x))
+  (list
+    (list (car x) (car y) (car z) (car p1))
+    (list (cadr x) (cadr y) (cadr z) (cadr p1))
+    (list (caddr x) (caddr y) (caddr z) (caddr p1))
+    (list 0.0 0.0 0.0 1.0)
+  )
+)
+
+(setq *gtp-valve-single-db*
+  '(
+    (20 "SINGLE2VD" 120.0 260.0 180.0)
+    (25 "SINGLE2VD" 130.0 270.0 190.0)
+    (32 "SINGLE2VD" 140.0 280.0 200.0)
+    (40 "SINGLE2VD" 150.0 300.0 210.0)
+    (50 "SINGLE2VD" 165.0 320.0 220.0)
+    (65 "SINGLE2VD" 180.0 340.0 230.0)
+    (80 "SINGLE2VD" 195.0 360.0 240.0)
+    (100 "SINGLE2VD" 220.0 400.0 260.0)
+    (125 "SINGLE2VD" 250.0 450.0 280.0)
+    (150 "SINGLE2VD" 285.0 500.0 300.0)
+    (200 "SINGLE2VD" 340.0 600.0 340.0)
+    (250 "SINGLE2VD" 400.0 700.0 380.0)
+    (300 "SINGLE2VD" 460.0 800.0 420.0)
+    (350 "SINGLE2VD" 510.0 900.0 460.0)
+    (400 "SINGLE2VD" 570.0 1000.0 500.0)
+    (450 "SINGLE2VD" 630.0 1100.0 540.0)
+    (500 "SINGLE2VD" 700.0 1200.0 580.0)
+    (600 "SINGLE2VD" 820.0 1400.0 640.0)
+  )
+)
+(setq *gtp-valve-twin-db*
+  '(
+    (20 "TWIN2VD" 140.0 330.0 190.0)
+    (25 "TWIN2VD" 150.0 340.0 200.0)
+    (32 "TWIN2VD" 165.0 360.0 210.0)
+    (40 "TWIN2VD" 180.0 380.0 220.0)
+    (50 "TWIN2VD" 195.0 400.0 230.0)
+    (65 "TWIN2VD" 210.0 430.0 240.0)
+    (80 "TWIN2VD" 230.0 460.0 250.0)
+    (100 "TWIN2VD" 260.0 520.0 280.0)
+    (125 "TWIN2VD" 290.0 580.0 300.0)
+    (150 "TWIN2VD" 330.0 640.0 320.0)
+    (200 "TWIN2VD" 390.0 760.0 360.0)
+    (250 "TWIN2VD" 460.0 880.0 400.0)
+    (300 "TWIN2VD" 520.0 1000.0 440.0)
+    (350 "TWIN2VD" 580.0 1120.0 480.0)
+    (400 "TWIN2VD" 650.0 1240.0 520.0)
+    (450 "TWIN2VD" 720.0 1360.0 560.0)
+    (500 "TWIN2VD" 800.0 1480.0 600.0)
+    (600 "TWIN2VD" 930.0 1700.0 660.0)
+  )
+)
+(defun gtp:valve-row (dn family)
+  (assoc dn (if (= family "SINGLE2VD") *gtp-valve-single-db* *gtp-valve-twin-db*))
+)
+(defun gtp:valve-family-prompt (/ s)
+  (initget "SINGLE2VD TWIN2VD")
+  (setq s (getkword "\nValve family [SINGLE2VD/TWIN2VD] <SINGLE2VD>: "))
+  (if s s "SINGLE2VD")
+)
+
+(defun gtp:make-valve-solid (center tangent bodyOd bodyLen stemH layer / p1 p2 flangeLen f1 f2 sh se obj up)
+  (setq p1 (gtp:vadd center (gtp:vscale tangent (- (/ (gtp:mm bodyLen) 2.0)))))
+  (setq p2 (gtp:vadd center (gtp:vscale tangent (/ (gtp:mm bodyLen) 2.0))))
+  (setq obj (gtp:make-cylinder p1 p2 (gtp:mm bodyOd) layer))
+  (setq flangeLen (gtp:mm 45.0))
+  (setq f1 (gtp:make-cylinder p1 (gtp:vadd p1 (gtp:vscale tangent flangeLen)) (* (gtp:mm bodyOd) 1.14) layer))
+  (setq f2 (gtp:make-cylinder (gtp:vadd p2 (gtp:vscale tangent (- flangeLen))) p2 (* (gtp:mm bodyOd) 1.14) layer))
+  (if (> (abs (caddr tangent)) 0.95)
+    (setq up '(1.0 0.0 0.0))
+    (setq up '(0.0 0.0 1.0))
+  )
+  (setq sh center)
+  (setq se (gtp:vadd center (gtp:vscale up (gtp:mm stemH))))
+  (gtp:make-cylinder sh se (max (gtp:mm 35.0) (* (gtp:mm bodyOd) 0.20)) layer)
+  (list obj f1 f2)
+)
+
+(defun gtp:place-valve (ent pick family dn row / p t bodyOd bodyLen stemH comp)
+  (setq p (gtp:curve-point-safe ent pick))
+  (if p
+    (progn
+      (setq t (gtp:curve-tangent-safe ent p))
+      (if (< (gtp:vmag t) 1e-12) (setq t '(1.0 0.0 0.0)))
+      (setq bodyOd (nth 2 row))
+      (setq bodyLen (nth 3 row))
+      (setq stemH (nth 4 row))
+      (gtp:make-valve-solid p t bodyOd bodyLen "GTP-PIPE-CASING")
+      (setq comp
+        (gtp:component-make
+          "VALVE" *gtp-flow-type* dn 2 p t bodyLen (nth 1 row)
+          (list
+            (cons 'family family)
+            (cons 'footprint (* 0.5 (gtp:mm bodyLen)))
+            (cons 'modelLength (gtp:mm bodyLen))
+            (cons 'bodyOd (gtp:mm bodyOd))
+            (cons 'stemHeight (gtp:mm stemH))
+          )
+        )
+      )
+      (gtp:component-register comp)
+      comp
+    )
+  )
+)
+
+; -----------------------------------------------------------------------------
+; COMMANDS: VALVES / COMPONENT INSPECTION
+; -----------------------------------------------------------------------------
+(defun c:GTPVALVECATALOG (/ family db r)
+  (setq family (gtp:valve-family-prompt))
+  (setq db (if (= family "SINGLE2VD") *gtp-valve-single-db* *gtp-valve-twin-db*))
+  (princ (strcat "\n" family " reference catalogue:"))
+  (foreach r db
+    (princ
+      (strcat
+        "\n  DN" (itoa (nth 0 r))
+        " | body OD " (rtos (nth 2 r) 2 1) " mm"
+        " | length " (rtos (nth 3 r) 2 1) " mm"
+        " | stem " (rtos (nth 4 r) 2 1) " mm"
+      )
+    )
+  )
+  (princ)
+)
+
+(defun c:GTPVALVE (/ *error* old sel ent family dn row comp)
+  (vl-load-com)
+  (defun *error* (msg)
+    (if old (setvar "CMDECHO" old))
+    (if (and msg (/= msg "Function cancelled") (/= msg "quit / exit abort"))
+      (princ (strcat "\nGTPVALVE error: " msg))
+    )
+    (princ)
+  )
+  (setq old (getvar "CMDECHO"))
+  (setvar "CMDECHO" 0)
+  (gtp:layers)
+  (setq sel (entsel "\nSelect route for valve: "))
+  (if sel
+    (progn
+      (setq ent (car sel))
+      (if (gtp:valid-route-p ent)
+        (progn
+          (setq family (gtp:valve-family-prompt))
+          (setq row nil)
+          (while (null row)
+            (setq dn (getint "\nValve DN [20/25/32/40/50/65/80/100/125/150/200/250/300/350/400/450/500/600]: "))
+            (if dn (setq row (gtp:valve-row dn family)))
+            (if (and dn (null row)) (princ "\nDN not in valve reference catalogue."))
+          )
+          (princ "\nPick valve centre on the route: ")
+          (setq pick (getpoint))
+          (if pick
+            (progn
+              (setq comp (gtp:place-valve ent (trans pick 1 0) family dn row))
+              (if comp
+                (princ
+                  (strcat
+                    "\nValve #" (itoa (gtp:component-get comp 'id))
+                    " placed at route centre. Pipe modelling will leave its footprint free when GTPPIPE is run."
+                  )
+                )
+                (princ "\nCould not place valve on selected route.")
+              )
+            )
+            (princ "\nValve placement cancelled.")
+          )
+        )
+        (princ "\nGTPVALVE accepts LINE, LWPOLYLINE or POLYLINE.")
+      )
+    )
+    (princ "\nNothing selected.")
+  )
+  (setvar "CMDECHO" old)
+  (princ)
+)
+
+(defun c:GTPVALVESUMMARY (/ vals c p)
+  (setq vals (gtp:components-by-type "VALVE"))
+  (princ (strcat "\nValve components registered: " (itoa (length vals))))
+  (foreach c vals
+    (setq p (gtp:component-get c 'position))
+    (princ
+      (strcat
+        "\n  #" (itoa (gtp:component-get c 'id))
+        " " (gtp:component-get (gtp:component-get c 'catalogue) 'name)
+        ""
+      )
+    )
+    (if p
+      (princ
+        (strcat
+          " | DN" (itoa (gtp:component-get c 'dn))
+          " | (" (rtos (car p) 2 3) ", "
+          (rtos (cadr p) 2 3) ", "
+          (rtos (caddr p) 2 3) ")"
+        )
+      )
+    )
+  )
+  (princ)
+)
+
+(defun c:GTPCOMPONENTS (/ c p vals)
+  (princ (strcat "\nGTP components registered: " (itoa (length *gtp-components*))))
+  (foreach c *gtp-components*
+    (setq p (gtp:component-get c 'position))
+    (princ
+      (strcat
+        "\n  #" (itoa (gtp:component-get c 'id))
+        " | " (gtp:component-get c 'type)
+        " | DN" (itoa (gtp:component-get c 'dn))
+      )
+    )
+    (if p
+      (princ
+        (strcat
+          " | (" (rtos (car p) 2 2) ", "
+          (rtos (cadr p) 2 2) ", "
+          (rtos (caddr p) 2 2) ")"
+        )
+      )
+    )
+  )
+  (princ)
+)
+
+(defun c:GTPCLEARCOMPONENTS ()
+  (setq *gtp-components* '() *gtp-component-next-id* 1)
+  (princ "\nGTP component registry cleared. Existing solids are not deleted.")
+  (princ)
+)
+
+; -----------------------------------------------------------------------------
+; OTHER FITTING COMPONENT COMMANDS
+; -----------------------------------------------------------------------------
+(defun gtp:get-component-route-data (msg / sel ent pick p t row dn series casing carrier)
+  (setq sel (entsel msg))
+  (if sel
+    (progn
+      (setq ent (car sel))
+      (if (gtp:valid-route-p ent)
+        (progn
+          (setq pick (getpoint "\nPick component centre on route: "))
+          (if pick
+            (progn
+              (setq p (gtp:curve-point-safe ent (trans pick 1 0)))
+              (setq t (gtp:curve-tangent-safe ent p))
+              (gtp:setup-units)
+              (setq row (gtp:get-dn))
+              (setq dn (nth 0 row))
+              (setq series (gtp:get-series))
+              (setq carrier (gtp:mm (nth 1 row)))
+              (setq casing (gtp:mm (gtp:casing-od row series)))
+              (list ent p t row dn series carrier casing)
+            )
+          )
+        )
+      )
+    )
+  )
+)
+
+(defun c:GTPTEE (/ data ent p t row dn series carrier casing bp bt comp)
+  (setq data (gtp:get-component-route-data "\nSelect route for TEE: "))
+  (if data
+    (progn
+      (setq ent (nth 0 data) p (nth 1 data) t (nth 2 data) row (nth 3 data) dn (nth 4 data) series (nth 5 data) carrier (nth 6 data) casing (nth 7 data))
+      (setq bp (getpoint "\nPick branch end point: "))
+      (if bp
+        (progn
+          (setq bp (trans bp 1 0))
+          (setq bt (gtp:vunit (gtp:vsub bp p)))
+          (if (< (gtp:vmag bt) 1e-9) (setq bt '(0.0 1.0 0.0)))
+          (gtp:make-cylinder (gtp:vadd p (gtp:vscale t (- (* 0.5 carrier)))) (gtp:vadd p (gtp:vscale t (* 0.5 carrier))) casing "GTP-PIPE-CASING")
+          (gtp:make-cylinder p bp casing "GTP-PIPE-CASING")
+          (setq comp (gtp:component-register (gtp:component-make "TEE" *gtp-flow-type* dn series p t carrier "REFERENCE-TEE" (list (cons 'branchDirection bt) (cons 'branchEnd bp)))))
+          (princ (strcat "\nTEE #" (itoa (gtp:component-get comp 'id)) " placed."))
+        )
+      )
+    )
+    (princ "\nTEE placement cancelled.")
+  )
+  (princ)
+)
+
+(defun c:GTPBRANCH (/ data p bp bt row dn series carrier casing comp)
+  (setq data (gtp:get-component-route-data "\nSelect route for BRANCH: "))
+  (if data
+    (progn
+      (setq p (nth 1 data) row (nth 3 data) dn (nth 4 data) series (nth 5 data) carrier (nth 6 data) casing (nth 7 data))
+      (setq bp (getpoint "\nPick branch end point: "))
+      (if bp
+        (progn
+          (setq bp (trans bp 1 0))
+          (setq bt (gtp:vunit (gtp:vsub bp p)))
+          (gtp:make-cylinder p bp casing "GTP-PIPE-CASING")
+          (setq comp (gtp:component-register (gtp:component-make "BRANCH" *gtp-flow-type* dn series p bt carrier "REFERENCE-BRANCH" (list (cons 'branchEnd bp)))))
+          (princ (strcat "\nBRANCH #" (itoa (gtp:component-get comp 'id)) " placed."))
+        )
+      )
+    )
+    (princ "\nBRANCH placement cancelled.")
+  )
+  (princ)
+)
+
+(defun c:GTPREDUCER (/ data p t row dn series casing carrier newDn newRow newCasing len p1 p2 doc ms sol comp)
+  (setq data (gtp:get-component-route-data "\nSelect route for REDUCER: "))
+  (if data
+    (progn
+      (setq p (nth 1 data) t (nth 2 data) row (nth 3 data) dn (nth 4 data) series (nth 5 data) carrier (nth 6 data) casing (nth 7 data))
+      (setq newDn (getint "\nReducer other DN: "))
+      (setq newRow (if newDn (gtp:find-dn newDn)))
+      (if newRow
+        (progn
+          (setq newCasing (gtp:mm (gtp:casing-od newRow series)))
+          (setq len (gtp:mm 300.0))
+          (setq p1 (gtp:vadd p (gtp:vscale t (- (/ len 2.0)))))
+          (setq p2 (gtp:vadd p (gtp:vscale t (/ len 2.0))))
+          (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
+          (setq ms (vla-get-ModelSpace doc))
+          (setq sol (vl-catch-all-apply 'vla-AddCone (list ms (/ casing 2.0) len (/ newCasing 2.0))))
+          (if (and sol (not (vl-catch-all-error-p sol)))
+            (progn
+              (vla-TransformBy sol (vlax-tmatrix (gtp:axis-matrix-start p1 p2)))
+              (vla-put-Layer sol "GTP-PIPE-CASING")
+              (vla-put-Color sol *gtp-pipe-color*)
+            )
+            (gtp:make-cylinder p1 p2 (max casing newCasing) "GTP-PIPE-CASING")
+          )
+          (setq comp (gtp:component-register (gtp:component-make "REDUCER" *gtp-flow-type* dn series p t len "REFERENCE-REDUCER" (list (cons 'otherDN newDn) (cons 'otherCasing newCasing)))))
+          (princ (strcat "\nREDUCER #" (itoa (gtp:component-get comp 'id)) " placed DN" (itoa dn) " -> DN" (itoa newDn) "."))
+        )
+        (princ "\nReducer DN not in current database.")
+      )
+    )
+    (princ "\nREDUCER placement cancelled.")
+  )
+  (princ)
+)
+
+(defun c:GTPENDCAP (/ *error* old sel ent pick pts p endp prev dir row dn series casing capLen comp)
+  (defun *error* (msg)
+    (if old (setvar "CMDECHO" old))
+    (if (and msg (/= msg "Function cancelled") (/= msg "quit / exit abort"))
+      (princ (strcat "\nGTPENDCAP error: " msg))
+    )
+    (princ)
+  )
+  (setq old (getvar "CMDECHO"))
+  (setvar "CMDECHO" 0)
+  (gtp:layers)
+  (setq sel (entsel "\nSelect route for ENDCAP: "))
+  (if sel
+    (progn
+      (setq ent (car sel) pick (trans (cadr sel) 1 0))
+      (if (gtp:valid-route-p ent)
+        (progn
+          (setq pts (gtp:curve-points ent))
+          (if (and pts (>= (length pts) 2))
+            (progn
+              (setq p (car pts) endp (nth (1- (length pts)) pts))
+              (if (> (distance pick endp) (distance pick p))
+                (progn (setq p endp) (setq prev (nth (- (length pts) 2) pts)))
+                (setq prev (cadr pts))
+              )
+              (setq dir (gtp:vunit (gtp:vsub p prev)))
+              (gtp:setup-units)
+              (setq row (gtp:get-dn) dn (nth 0 row) series (gtp:get-series))
+              (setq casing (gtp:mm (gtp:casing-od row series)))
+              (setq capLen (gtp:mm 90.0))
+              (gtp:make-cylinder (gtp:vadd p (gtp:vscale dir (- capLen))) p casing "GTP-PIPE-CASING")
+              (setq comp (gtp:component-register (gtp:component-make "END_CAP" *gtp-flow-type* dn series p dir capLen "REFERENCE-ENDCAP" nil)))
+              (princ (strcat "\nENDCAP #" (itoa (gtp:component-get comp 'id)) " placed at selected route end."))
+            )
+            (princ "\nCould not read route endpoints.")
+          )
+        )
+        (princ "\nGTPENDCAP accepts LINE, LWPOLYLINE or POLYLINE.")
+      )
+    )
+    (princ "\nNothing selected.")
+  )
+  (setvar "CMDECHO" old)
+  (princ)
+)
+
+; -----------------------------------------------------------------------------
+; VALVE-AWARE STRAIGHT-RUN SPLITTING
+; Valves are centre-based. Their registered footprint is excluded from pipes.
+; -----------------------------------------------------------------------------
+(defun gtp:valve-components-on-segment (a b / vals out c p d proj foot)
+  (setq vals (gtp:components-by-type "VALVE"))
+  (setq out '())
+  (foreach c vals
+    (setq p (gtp:component-get c 'position))
+    (setq d (gtp:vunit (gtp:vsub b a)))
+    (setq proj (gtp:dot (gtp:vsub p a) d))
+    (if (and (> proj 0.0) (< proj (distance a b)))
+      (progn
+        (setq foot (gtp:component-get (gtp:component-get c 'options) 'footprint))
+        (if (or (null foot) (<= foot 0.0)) (setq foot 0.0))
+        (setq out (cons (list proj foot c) out))
+      )
+    )
+  )
+  (vl-sort out '(lambda (x y) (< (car x) (car y))))
+)
+
+(defun gtp:model-segment-valve-aware (p1 p2 carrier casing mode / len d pos ranges item proj foot s e count ordered start cutStart cutEnd)
+  (setq len (distance p1 p2))
+  (setq d (gtp:vunit (gtp:vsub p2 p1)))
+  (setq ordered (gtp:valve-components-on-segment p1 p2))
+  (setq start 0.0 count 0)
+  (foreach item ordered
+    (setq proj (car item))
+    (setq foot (cadr item))
+    (setq cutStart (max start (- proj foot)))
+    (setq cutEnd (min len (+ proj foot)))
+    (if (> (- cutStart start) 1e-8)
+      (setq count (+ count (gtp:model-segment (gtp:vadd p1 (gtp:vscale d start)) (gtp:vadd p1 (gtp:vscale d cutStart)) carrier casing mode)))
+    )
+    (setq start (max start cutEnd))
+  )
+  (if (< start len)
+    (setq count (+ count (gtp:model-segment (gtp:vadd p1 (gtp:vscale d start)) p2 carrier casing mode)))
+  )
+  count
+)
+
+(defun gtp:model-corner-route-component-aware (pts dn carrier casing mode style / n elbows i spec p1 p2 s e spoolCount elbowCount clippedCount)
+  (setq n (length pts) elbows '() i 0 spoolCount 0 elbowCount 0 clippedCount 0)
+  (while (< i n)
+    (setq spec nil)
+    (if (and (> i 0) (< i (1- n)))
+      (setq spec (gtp:make-elbow-spec (nth (1- i) pts) (nth i pts) (nth (1+ i) pts) dn carrier casing style))
+    )
+    (if (and spec (gtp:spec 'clipped spec)) (setq clippedCount (1+ clippedCount)))
+    (setq elbows (append elbows (list spec)))
+    (setq i (1+ i))
+  )
+  (setq i 0)
+  (while (< i (1- n))
+    (setq p1 (nth i pts) p2 (nth (1+ i) pts))
+    (setq s (if (nth i elbows) (gtp:spec 'end (nth i elbows)) p1))
+    (setq e (if (nth (1+ i) elbows) (gtp:spec 'start (nth (1+ i) elbows)) p2))
+    (if (> (distance s e) 1e-8)
+      (setq spoolCount (+ spoolCount (gtp:model-segment-valve-aware s e carrier casing mode)))
+    )
+    (setq i (1+ i))
+  )
+  (setq i 1)
+  (while (< i (1- n))
+    (if (nth i elbows)
+      (progn
+        (gtp:model-elbow (nth i elbows) carrier casing mode)
+        (setq elbowCount (1+ elbowCount))
+      )
+    )
+    (setq i (1+ i))
+  )
+  (list spoolCount elbowCount clippedCount)
+)
+(setq *gtp-model-corner-route-component-aware* T)
+(setq *gtp-old-model-corner-route* 'gtp:model-corner-route)
+(defun gtp:model-corner-route (pts dn carrier casing mode style)
+  (gtp:model-corner-route-component-aware pts dn carrier casing mode style)
+)
+
+; =============================================================================
+; COMMAND: GTPTEST
+; Syntax/load diagnostic for the MASTER FILE.
+; Does not create geometry.
+; =============================================================================
+(defun c:GTPTEST (/ checks ok name value)
+  (setq checks
+    (list
+      (list "GTPPIPE" 'c:GTPPIPE)
+      (list "GTPMITER" 'c:GTPMITER)
+      (list "GTPMITTER" 'c:GTPMITTER)
+      (list "GTPUNITS" 'c:GTPUNITS)
+      (list "GTPLAYER" 'c:GTPLAYER)
+      (list "GTPVALVE" 'c:GTPVALVE)
+      (list "GTPVALVECATALOG" 'c:GTPVALVECATALOG)
+      (list "GTPVALVESUMMARY" 'c:GTPVALVESUMMARY)
+      (list "GTPTEE" 'c:GTPTEE)
+      (list "GTPBRANCH" 'c:GTPBRANCH)
+      (list "GTPREDUCER" 'c:GTPREDUCER)
+      (list "GTPENDCAP" 'c:GTPENDCAP)
+      (list "GTPCOMPONENTS" 'c:GTPCOMPONENTS)
+      (list "GTPCLEARCOMPONENTS" 'c:GTPCLEARCOMPONENTS)
+      (list "GTPHELP" 'c:GTPHELP)
+    )
+  )
+  (setq ok T)
+  (princ "\n========================================")
+  (princ "\n GTP MASTER LOAD/SYNTAX TEST")
+  (princ "\n========================================")
+  (foreach item checks
+    (setq name (car item) value (eval (cadr item)))
+    (if value
+      (princ (strcat "\n[OK] " name))
+      (progn
+        (setq ok nil)
+        (princ (strcat "\n[FAIL] " name))
+      )
+    )
+  )
+  (princ (strcat "\nComponents in memory: " (itoa (length *gtp-components*))))
+  (if (fboundp 'gtp:model-corner-route)
+    (princ "\n[OK] Valve-aware route model registered.")
+    (progn (setq ok nil) (princ "\n[FAIL] Route model missing."))
+  )
+  (if ok
+    (princ "\nGTPTEST PASS - command functions are loaded in the master file.")
+    (princ "\nGTPTEST FAIL - see the [FAIL] line(s) above.")
+  )
+  (princ)
+)
+
+; =============================================================================
+; UPDATED HELP
+; =============================================================================
 (defun c:GTPHELP ()
-  (princ "\nCommands loaded: GTPPIPE, GTPMITER, GTPMITTER, GTPUNITS, GTPLAYER, GTPHELP.")
+  (princ "\nGTP commands loaded in GTP_DH_TOOLKIT.lsp:")
+  (princ "\n  GTPPIPE            Pipe + elbow route modelling")
+  (princ "\n  GTPMITER           Join two route ends at axis intersection")
+  (princ "\n  GTPMITTER          Alias for GTPMITER")
+  (princ "\n  GTPUNITS           Set/check drawing-unit scale")
+  (princ "\n  GTPLAYER           Create/check GTP layers")
+  (princ "\n  GTPVALVE           Place a centre-based valve component")
+  (princ "\n  GTPVALVECATALOG    Show valve reference catalogue")
+  (princ "\n  GTPVALVESUMMARY    List registered valves")
+  (princ "\n  GTPTEE             Place reference tee component")
+  (princ "\n  GTPBRANCH          Place reference branch component")
+  (princ "\n  GTPREDUCER         Place reference reducer component")
+  (princ "\n  GTPENDCAP          Place reference end-cap component")
+  (princ "\n  GTPCOMPONENTS       List registered components")
+  (princ "\n  GTPCLEARCOMPONENTS  Clear in-memory component registry")
+  (princ "\n  GTPTEST             Master load/syntax command-function test")
   (princ)
 )
 
 (princ "\nGTP_DH_TOOLKIT.lsp loaded successfully.")
-(princ "\nCommands: GTPPIPE, GTPMITER (GTPMITTER), GTPUNITS, GTPLAYER, GTPHELP.")
+(princ "\nCommands: GTPPIPE, GTPMITER, GTPMITTER, GTPUNITS, GTPLAYER, GTPVALVE, GTPVALVECATALOG, GTPVALVESUMMARY, GTPTEE, GTPBRANCH, GTPREDUCER, GTPENDCAP, GTPCOMPONENTS, GTPCLEARCOMPONENTS, GTPTEST, GTPHELP.")
 (princ)

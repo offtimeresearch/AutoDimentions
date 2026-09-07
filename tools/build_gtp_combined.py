@@ -20,6 +20,8 @@ OUTPUT = ROOT / "GTP_DH_TOOLKIT_COMBINED.lsp"
 CORE = ROOT / "GTP_DH_TOOLKIT.lsp"
 BRIDGE = ROOT / "GTP_Combined_Final_Bridge.lsp"
 SMART = ROOT / "GTP_Smart_Pipe_Command.lsp"
+VARIABLE_DN = ROOT / "GTP_Variable_DN_Route.lsp"
+VARIABLE_DN_FIXES = ROOT / "GTP_Variable_DN_Fixes.lsp"
 
 MODULES = [
     ROOT / "GTP_Component_Architecture.lsp",
@@ -60,6 +62,7 @@ REQUIRED_COMMANDS = [
     "GTPCOMPONENTSAVE",
     "GTPCOMBINEDTEST",
     "GTPSMARTTEST",
+    "GTPVARDNTEST",
     "GTPHELP",
 ]
 
@@ -99,6 +102,8 @@ def build_text() -> str:
         sources.append((module.name, read(module)))
     sources.append((BRIDGE.name, read(BRIDGE)))
     sources.append((SMART.name, read(SMART)))
+    sources.append((VARIABLE_DN.name, read(VARIABLE_DN)))
+    sources.append((VARIABLE_DN_FIXES.name, read(VARIABLE_DN_FIXES)))
 
     manifest = [
         "; GTP_DH_TOOLKIT_COMBINED.LSP",
@@ -106,9 +111,10 @@ def build_text() -> str:
         "; SELF-CONTAINED GENERATED BUILD - APPLOAD ONLY THIS FILE",
         ";",
         "; Generated from the proven GTP geometry core, component Steps 1-6,",
-        "; the final multi-component route bridge, and the intelligent GTPPIPE",
-        "; single-session workflow. Do not hand-edit this generated file;",
-        "; edit the source modules and run tools/build_gtp_combined.py instead.",
+        "; the final multi-component route bridge, intelligent GTPPIPE session,",
+        "; and reducer-driven variable-DN route generation. Do not hand-edit",
+        "; this generated file; edit the source modules and run",
+        "; tools/build_gtp_combined.py instead.",
         ";",
         "; Source manifest (SHA-256 of included text):",
     ]
@@ -118,9 +124,9 @@ def build_text() -> str:
         [
             ";",
             "; Architecture:",
-            ";   route -> one-time setup -> component placement menu -> route cleanup",
-            ";   -> elbow footprints -> persistent component footprints",
-            ";   -> remaining straight intervals -> stock-length spools -> 3D solids",
+            ";   route -> one-time setup -> reducer DN transitions -> component menu",
+            ";   -> route cleanup -> local-DN elbow footprints -> component footprints",
+            ";   -> local-DN straight intervals -> stock-length spools -> 3D solids",
             "; =============================================================================",
             "",
         ]
@@ -216,7 +222,13 @@ def validate_lisp(text: str) -> None:
         raise SystemExit("Final combined route bridge is missing")
 
     if "GTPPIPE now runs one-route/one-setup component-aware modelling." not in text:
-        raise SystemExit("Intelligent GTPPIPE override is missing")
+        raise SystemExit("Intelligent GTPPIPE source layer is missing")
+
+    if "Reducers now change downstream pipe and elbow DN toward route End." not in text:
+        raise SystemExit("Reducer-driven variable-DN route override is missing")
+
+    if "gtp:vcdn-model-route" not in text or "gtp:vcdn-dn-at-station" not in text:
+        raise SystemExit("Variable-DN route state functions are missing")
 
     for kind in ("TEE", "REDUCER", "BRANCH", "END_CAP"):
         bad = re.search(

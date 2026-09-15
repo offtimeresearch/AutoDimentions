@@ -1,0 +1,584 @@
+'=======================================================================
+' iLogic Rule: Demote Selected Components to New Subassembly
+' Inventor 2026 compatible version
+'
+' FIXES IN THIS VERSION
+' - No namespace-level Const declarations (invalid in iLogic rules).
+' - No split ComponentOccurrence declarations that can confuse the iLogic parser.
+' - Uses explicit collection indexing instead of problematic For Each type syntax.
+' - Keeps the Autodesk BrowserPane.Reorder API demote workflow.
+' - Uses fully qualified .NET names where possible.
+'=======================================================================
+
+AddReference "System.Windows.Forms"
+
+Imports System.Windows.Forms
+
+Sub Main()
+
+    Dim invApp As Inventor.Application = ThisApplication
+
+    '===================================================================
+    ' Validate active document
+    '===================================================================
+    If invApp.ActiveDocument Is Nothing Then
+        MessageBox.Show("No Inventor document is open.", "Demote Components", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        Exit Sub
+    End If
+
+    If invApp.ActiveDocument.DocumentType <> Inventor.DocumentTypeEnum.kAssemblyDocumentObject Then
+        MessageBox.Show("Run this rule from an Inventor assembly.", "Demote Components", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        Exit Sub
+    End If
+
+    Dim parentAssembly As Inventor.AssemblyDocument = CType(invApp.ActiveDocument, Inventor.AssemblyDocument)
+
+    If String.IsNullOrWhiteSpace(parentAssembly.FullFileName) Then
+        MessageBox.Show("Save the parent assembly before running this rule.", "Parent Assembly Not Saved", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        Exit Sub
+    End If
+
+    '===================================================================
+    ' Collect selected top-level occurrences
+    '===================================================================
+    Dim selectedOccurrences As New System.Collections.Generic.List(Of Inventor.ComponentOccurrence)
+
+    For Each selectedObject As Object In parentAssembly.SelectSet
+        If TypeOf selectedObject Is Inventor.ComponentOccurrence Then
+            Dim selectedOccurrence As Inventor.ComponentOccurrence = CType(selectedObject, Inventor.ComponentOccurrence)
+
+            If selectedOccurrence.ParentOccurrence Is Nothing Then
+                If Not selectedOccurrences.Contains(selectedOccurrence) Then
+                    selectedOccurrences.Add(selectedOccurrence)
+                End If
+            End If
+        End If
+    Next
+
+    '===================================================================
+    ' If nothing was preselected, ask the user to select occurrences
+    '===================================================================
+    If selectedOccurrences.Count = 0 Then
+        MessageBox.Show("Select the top-level components to demote." & vbCrLf & vbCrLf & _
+                        "Select components one at a time." & vbCrLf & _
+                        "Press ESC when the selection is complete.", _
+                        "Select Components", MessageBoxButtons.OK, MessageBoxIcon.Information)
+
+        Do
+            Try
+                Dim pickedObject As Object = invApp.CommandManager.Pick(Inventor.SelectionFilterEnum.kAssemblyOccurrenceFilter, _
+                                                                       "Select a top-level component. Press ESC when finished.")
+
+                If pickedObject Is Nothing Then Exit Do
+
+                If TypeOf pickedObject Is Inventor.ComponentOccurrence Then
+                    Dim pickedOccurrence As Inventor.ComponentOccurrence = CType(pickedObject, Inventor.ComponentOccurrence)
+
+                    If pickedOccurrence.ParentOccurrence Is Nothing Then
+                        If Not selectedOccurrences.Contains(pickedOccurrence) Then
+                            selectedOccurrences.Add(pickedOccurrence)
+                        End If
+                    Else
+                        MessageBox.Show(pickedOccurrence.Name & " is not a top-level occurrence." & vbCrLf & _
+                                        "The component was not added to the selection.", _
+                                        "Nested Component", MessageBoxButtons.OK, MessageBoxIcon.Information)
+                    End If
+                End If
+            Catch
+                ' Inventor normally throws when ESC is pressed in Pick.
+                Exit Do
+            End Try
+        Loop
+    End If
+
+    If selectedOccurrences.Count = 0 Then
+        MessageBox.Show("No top-level components were selected." & vbCrLf & _
+                        "The operation was cancelled.", _
+                        "Demote Components", MessageBoxButtons.OK, MessageBoxIcon.Information)
+        Exit Sub
+    End If
+
+    '===================================================================
+    ' Property names. These are local because namespace-level Const
+    ' declarations are not valid in an iLogic rule.
+    '===================================================================
+    Dim propPrefix As String = "Demote_Prefix"
+    Dim propFolder As String = "Demote_SaveFolder"
+    Dim propSeparator As String = "Demote_Separator"
+    Dim propStartNumber As String = "Demote_StartNumber"
+    Dim propDigitCount As String = "Demote_DigitCount"
+
+    '===================================================================
+    ' Load or request settings
+    '===================================================================
+    Dim prefix As String = ""
+    Dim separator As String = "-"
+    Dim destinationFolder As String = ""
+    Dim startNumber As Integer = 1
+    Dim digitCount As Integer = 4
+
+    Dim settingsExist As Boolean = DemoteSettingsExist(parentAssembly)
+    Dim changeSettings As Boolean = False
+
+    If settingsExist Then
+        prefix = GetCustomStringProperty(parentAssembly, propPrefix, "SUB-ASM")
+        separator = GetCustomStringProperty(parentAssembly, propSeparator, "-")
+        destinationFolder = GetCustomStringProperty(parentAssembly, propFolder, System.IO.Path.GetDirectoryName(parentAssembly.FullFileName))
+        startNumber = GetCustomIntegerProperty(parentAssembly, propStartNumber, 1)
+        digitCount = GetCustomIntegerProperty(parentAssembly, propDigitCount, 4)
+
+        Dim settingsMessage As String = "Saved demote settings:" & vbCrLf & vbCrLf & _
+                                       "Prefix: " & prefix & vbCrLf & _
+                                       "Separator: " & separator & vbCrLf & _
+                                       "Starting number: " & startNumber.ToString() & vbCrLf & _
+                                       "Number of digits: " & digitCount.ToString() & vbCrLf & _
+                                       "Folder: " & destinationFolder & vbCrLf & vbCrLf & _
+                                       "Select Yes to use these settings." & vbCrLf & _
+                                       "Select No to change the settings." & vbCrLf & _
+                                       "Select Cancel to stop."
+
+        Dim settingsAnswer As DialogResult = MessageBox.Show(settingsMessage, "Demote Subassembly Settings", _
+                                                             MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question)
+
+        If settingsAnswer = DialogResult.Cancel Then
+            Exit Sub
+        ElseIf settingsAnswer = DialogResult.No Then
+            changeSettings = True
+        End If
+    Else
+        changeSettings = True
+    End If
+
+    '===================================================================
+    ' Ask for settings on first use or when the user selects No
+    '===================================================================
+    If changeSettings Then
+        Dim defaultPrefix As String = GetCustomStringProperty(parentAssembly, propPrefix, "SUB-ASM")
+        Dim defaultSeparator As String = GetCustomStringProperty(parentAssembly, propSeparator, "-")
+        Dim defaultStartNumber As Integer = GetCustomIntegerProperty(parentAssembly, propStartNumber, 1)
+        Dim defaultDigitCount As Integer = GetCustomIntegerProperty(parentAssembly, propDigitCount, 4)
+        Dim parentFolder As String = System.IO.Path.GetDirectoryName(parentAssembly.FullFileName)
+        Dim defaultFolder As String = GetCustomStringProperty(parentAssembly, propFolder, parentFolder)
+
+        prefix = Microsoft.VisualBasic.Interaction.InputBox( _
+            "Enter the new subassembly prefix." & vbCrLf & vbCrLf & _
+            "Example: MACHINE-SUB", _
+            "Demote Settings - Prefix", defaultPrefix)
+
+        prefix = CleanFileName(prefix.Trim())
+
+        If String.IsNullOrWhiteSpace(prefix) Then
+            MessageBox.Show("A valid prefix was not entered." & vbCrLf & _
+                            "The operation was cancelled.", _
+                            "Invalid Prefix", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Exit Sub
+        End If
+
+        separator = Microsoft.VisualBasic.Interaction.InputBox( _
+            "Enter the separator between the prefix and serial number." & vbCrLf & vbCrLf & _
+            "Examples: - or _", _
+            "Demote Settings - Separator", defaultSeparator)
+
+        separator = CleanFileName(separator)
+
+        Dim startNumberText As String = Microsoft.VisualBasic.Interaction.InputBox( _
+            "Enter the starting serial number." & vbCrLf & vbCrLf & _
+            "The rule automatically uses the next available number.", _
+            "Demote Settings - Starting Number", defaultStartNumber.ToString())
+
+        If Not Integer.TryParse(startNumberText, startNumber) OrElse startNumber < 0 Then
+            MessageBox.Show("Enter a valid non-negative whole number.", "Invalid Starting Number", _
+                            MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Exit Sub
+        End If
+
+        Dim digitText As String = Microsoft.VisualBasic.Interaction.InputBox( _
+            "Enter the number of digits in the serial number." & vbCrLf & vbCrLf & _
+            "Example: 4 produces 0001.", _
+            "Demote Settings - Number of Digits", defaultDigitCount.ToString())
+
+        If Not Integer.TryParse(digitText, digitCount) OrElse digitCount < 1 OrElse digitCount > 10 Then
+            MessageBox.Show("Enter a digit count between 1 and 10.", "Invalid Digit Count", _
+                            MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Exit Sub
+        End If
+
+        Dim folderDialog As New FolderBrowserDialog()
+        folderDialog.Description = "Select the folder for the new demoted subassemblies."
+        folderDialog.ShowNewFolderButton = True
+
+        If System.IO.Directory.Exists(defaultFolder) Then
+            folderDialog.SelectedPath = defaultFolder
+        ElseIf System.IO.Directory.Exists(parentFolder) Then
+            folderDialog.SelectedPath = parentFolder
+        End If
+
+        If folderDialog.ShowDialog() <> DialogResult.OK Then Exit Sub
+
+        destinationFolder = folderDialog.SelectedPath
+
+        If Not System.IO.Directory.Exists(destinationFolder) Then
+            Try
+                System.IO.Directory.CreateDirectory(destinationFolder)
+            Catch ex As Exception
+                MessageBox.Show("The destination folder could not be created." & vbCrLf & vbCrLf & _
+                                destinationFolder & vbCrLf & vbCrLf & ex.Message, _
+                                "Folder Error", MessageBoxButtons.OK, MessageBoxIcon.Error)
+                Exit Sub
+            End Try
+        End If
+
+        SetCustomProperty(parentAssembly, propPrefix, prefix)
+        SetCustomProperty(parentAssembly, propSeparator, separator)
+        SetCustomProperty(parentAssembly, propFolder, destinationFolder)
+        SetCustomProperty(parentAssembly, propStartNumber, startNumber)
+        SetCustomProperty(parentAssembly, propDigitCount, digitCount)
+
+        Try
+            parentAssembly.Save()
+        Catch ex As Exception
+            MessageBox.Show("The settings were added to the assembly, but the parent assembly could not be saved." & _
+                            vbCrLf & vbCrLf & ex.Message, "Save Warning", _
+                            MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        End Try
+    End If
+
+    '===================================================================
+    ' Validate destination folder
+    '===================================================================
+    If String.IsNullOrWhiteSpace(destinationFolder) Then
+        MessageBox.Show("The destination folder is empty." & vbCrLf & _
+                        "Run the rule again and change the saved settings.", _
+                        "Invalid Folder", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        Exit Sub
+    End If
+
+    If Not System.IO.Directory.Exists(destinationFolder) Then
+        Dim missingFolderAnswer As DialogResult = MessageBox.Show( _
+            "The saved destination folder does not exist:" & vbCrLf & vbCrLf & _
+            destinationFolder & vbCrLf & vbCrLf & "Do you want to create it?", _
+            "Destination Folder Not Found", MessageBoxButtons.YesNo, MessageBoxIcon.Question)
+
+        If missingFolderAnswer <> DialogResult.Yes Then Exit Sub
+
+        Try
+            System.IO.Directory.CreateDirectory(destinationFolder)
+        Catch ex As Exception
+            MessageBox.Show("The destination folder could not be created." & vbCrLf & vbCrLf & ex.Message, _
+                            "Folder Error", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            Exit Sub
+        End Try
+    End If
+
+    '===================================================================
+    ' Generate the next unused filename
+    '===================================================================
+    Dim newAssemblyPath As String = GetNextFileName(destinationFolder, prefix, separator, _
+                                                    startNumber, digitCount, ".iam")
+    Dim newAssemblyName As String = System.IO.Path.GetFileNameWithoutExtension(newAssemblyPath)
+
+    Dim confirmationMessage As String = "Selected occurrences: " & selectedOccurrences.Count.ToString() & _
+                                        vbCrLf & vbCrLf & "New subassembly:" & vbCrLf & _
+                                        newAssemblyPath & vbCrLf & vbCrLf & _
+                                        "Continue with the Demote operation?"
+
+    Dim confirmationResult As DialogResult = MessageBox.Show(confirmationMessage, "Confirm Demote", _
+                                                              MessageBoxButtons.YesNo, MessageBoxIcon.Question)
+    If confirmationResult <> DialogResult.Yes Then Exit Sub
+
+    '===================================================================
+    ' Locate assembly template
+    '===================================================================
+    Dim templatePath As String = invApp.FileManager.GetTemplateFile(Inventor.DocumentTypeEnum.kAssemblyDocumentObject)
+
+    If String.IsNullOrWhiteSpace(templatePath) OrElse Not System.IO.File.Exists(templatePath) Then
+        MessageBox.Show("The standard Inventor assembly template could not be found." & vbCrLf & vbCrLf & _
+                        "Check the template location in Inventor Application Options.", _
+                        "Assembly Template Not Found", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        Exit Sub
+    End If
+
+    '===================================================================
+    ' Create new subassembly and perform Demote
+    '===================================================================
+    Dim newSubassembly As Inventor.AssemblyDocument = Nothing
+    Dim subassemblyOccurrence As Inventor.ComponentOccurrence = Nothing
+    Dim newFileCreated As Boolean = False
+    Dim subassemblyInserted As Boolean = False
+    Dim demotedCount As Integer = 0
+    Dim failedItems As New System.Collections.Generic.List(Of String)
+
+    Try
+        '---------------------------------------------------------------
+        ' Create an empty assembly from the standard template
+        '---------------------------------------------------------------
+        newSubassembly = CType(invApp.Documents.Add(Inventor.DocumentTypeEnum.kAssemblyDocumentObject, _
+                                                    templatePath, False), Inventor.AssemblyDocument)
+
+        newSubassembly.SaveAs(newAssemblyPath, False)
+        newFileCreated = True
+
+        '---------------------------------------------------------------
+        ' Insert new subassembly at the parent assembly origin
+        '---------------------------------------------------------------
+        Dim identityMatrix As Inventor.Matrix = invApp.TransientGeometry.CreateMatrix()
+        subassemblyOccurrence = parentAssembly.ComponentDefinition.Occurrences.Add(newAssemblyPath, identityMatrix)
+        subassemblyOccurrence.Name = GetUniqueOccurrenceName(parentAssembly, newAssemblyName)
+        subassemblyInserted = True
+
+        '---------------------------------------------------------------
+        ' Get the Model browser pane
+        '---------------------------------------------------------------
+        Dim modelPane As Inventor.BrowserPane = GetModelBrowserPane(parentAssembly)
+        If modelPane Is Nothing Then
+            Throw New Exception("The Model browser pane could not be found.")
+        End If
+
+        '---------------------------------------------------------------
+        ' Get the browser node for the new subassembly
+        '---------------------------------------------------------------
+        Dim subassemblyNode As Inventor.BrowserNode = modelPane.GetBrowserNodeFromObject(subassemblyOccurrence)
+        If subassemblyNode Is Nothing Then
+            Throw New Exception("The browser node for the new subassembly could not be found.")
+        End If
+
+        ' Autodesk's documented Demote workflow uses the last visible child
+        ' of the new subassembly as the target and BrowserPane.Reorder to move
+        ' the source occurrence into that subassembly.
+        For i As Integer = 0 To selectedOccurrences.Count - 1
+            Try
+                Dim sourceOccurrence As Inventor.ComponentOccurrence = selectedOccurrences(i)
+                Dim sourceNode As Inventor.BrowserNode = modelPane.GetBrowserNodeFromObject(sourceOccurrence)
+
+                If sourceNode Is Nothing Then
+                    failedItems.Add(sourceOccurrence.Name & ": source browser node was not found.")
+                    Continue For
+                End If
+
+                Dim targetNode As Inventor.BrowserNode = GetLastVisibleChildNode(subassemblyNode)
+                If targetNode Is Nothing Then
+                    Throw New Exception("No valid target browser node was found inside the new subassembly.")
+                End If
+
+                modelPane.Reorder(targetNode, False, sourceNode)
+                demotedCount += 1
+            Catch occurrenceException As Exception
+                failedItems.Add(selectedOccurrences(i).Name & ": " & occurrenceException.Message)
+            End Try
+        Next
+
+        If demotedCount = 0 Then
+            Throw New Exception("None of the selected occurrences could be demoted.")
+        End If
+
+        Try
+            newSubassembly.Update2(True)
+        Catch
+            newSubassembly.Update()
+        End Try
+        newSubassembly.Save()
+
+        Try
+            parentAssembly.Update2(True)
+        Catch
+            parentAssembly.Update()
+        End Try
+        parentAssembly.Save()
+
+        Dim resultMessage As String = "Demote operation completed." & vbCrLf & vbCrLf & _
+                                      "New subassembly:" & vbCrLf & newAssemblyPath & vbCrLf & vbCrLf & _
+                                      "Occurrences demoted: " & demotedCount.ToString()
+
+        If failedItems.Count > 0 Then
+            resultMessage &= vbCrLf & vbCrLf & "Occurrences not demoted: " & failedItems.Count.ToString() & _
+                             vbCrLf & vbCrLf & String.Join(vbCrLf, failedItems.ToArray())
+        End If
+
+        MessageBox.Show(resultMessage, "Demote Completed", MessageBoxButtons.OK, MessageBoxIcon.Information)
+
+    Catch ex As Exception
+        Dim errorMessage As String = "The Demote operation could not be completed." & vbCrLf & vbCrLf & ex.Message
+
+        If demotedCount > 0 Then
+            errorMessage &= vbCrLf & vbCrLf & demotedCount.ToString() & _
+                            " occurrence(s) may already have been demoted." & vbCrLf & _
+                            "Use Inventor Undo if you need to restore the original structure."
+        ElseIf subassemblyInserted Then
+            errorMessage &= vbCrLf & vbCrLf & "The empty subassembly may have been inserted." & vbCrLf & _
+                            "Use Inventor Undo if necessary."
+        End If
+
+        If newFileCreated Then
+            errorMessage &= vbCrLf & vbCrLf & "A subassembly file may have been created at:" & vbCrLf & newAssemblyPath
+        End If
+
+        MessageBox.Show(errorMessage, "Demote Error", MessageBoxButtons.OK, MessageBoxIcon.Error)
+    End Try
+
+End Sub
+
+'=======================================================================
+' Checks whether this parent assembly has stored demote settings
+'=======================================================================
+Function DemoteSettingsExist(document As Inventor.Document) As Boolean
+    Dim storedPrefix As String = GetCustomStringProperty(document, "Demote_Prefix", "")
+    Dim storedFolder As String = GetCustomStringProperty(document, "Demote_SaveFolder", "")
+    Return Not String.IsNullOrWhiteSpace(storedPrefix) AndAlso Not String.IsNullOrWhiteSpace(storedFolder)
+End Function
+
+'=======================================================================
+' Returns the Custom iProperty set
+'=======================================================================
+Function GetCustomPropertySet(document As Inventor.Document) As Inventor.PropertySet
+    Return document.PropertySets.Item("{D5CDD505-2E9C-101B-9397-08002B2CF9AE}")
+End Function
+
+'=======================================================================
+' Creates or updates a custom iProperty
+'=======================================================================
+Sub SetCustomProperty(document As Inventor.Document, propertyName As String, propertyValue As Object)
+    Dim customProperties As Inventor.PropertySet = GetCustomPropertySet(document)
+
+    Try
+        Dim existingProperty As Inventor.Property = customProperties.Item(propertyName)
+        existingProperty.Value = propertyValue
+    Catch
+        customProperties.Add(propertyValue, propertyName)
+    End Try
+End Sub
+
+'=======================================================================
+' Reads a text custom iProperty
+'=======================================================================
+Function GetCustomStringProperty(document As Inventor.Document, propertyName As String, defaultValue As String) As String
+    Try
+        Dim customProperties As Inventor.PropertySet = GetCustomPropertySet(document)
+        Dim customProperty As Inventor.Property = customProperties.Item(propertyName)
+
+        If customProperty.Value Is Nothing Then Return defaultValue
+        Return CStr(customProperty.Value)
+    Catch
+        Return defaultValue
+    End Try
+End Function
+
+'=======================================================================
+' Reads an integer custom iProperty
+'=======================================================================
+Function GetCustomIntegerProperty(document As Inventor.Document, propertyName As String, defaultValue As Integer) As Integer
+    Try
+        Dim customProperties As Inventor.PropertySet = GetCustomPropertySet(document)
+        Dim customProperty As Inventor.Property = customProperties.Item(propertyName)
+
+        If customProperty.Value Is Nothing Then Return defaultValue
+
+        Dim result As Integer
+        If Integer.TryParse(CStr(customProperty.Value), result) Then Return result
+
+        Return defaultValue
+    Catch
+        Return defaultValue
+    End Try
+End Function
+
+'=======================================================================
+' Finds the Model browser pane
+'=======================================================================
+Function GetModelBrowserPane(assemblyDocument As Inventor.AssemblyDocument) As Inventor.BrowserPane
+    Try
+        Return assemblyDocument.BrowserPanes.Item("AmBrowserArrangement")
+    Catch
+    End Try
+
+    Try
+        Return assemblyDocument.BrowserPanes.Item("Model")
+    Catch
+    End Try
+
+    For i As Integer = 1 To assemblyDocument.BrowserPanes.Count
+        Try
+            Dim currentPane As Inventor.BrowserPane = assemblyDocument.BrowserPanes.Item(i)
+            If currentPane.BuiltIn AndAlso currentPane.Visible Then Return currentPane
+        Catch
+        End Try
+    Next
+
+    Return Nothing
+End Function
+
+'=======================================================================
+' Finds the last visible child inside the new subassembly browser node
+'=======================================================================
+Function GetLastVisibleChildNode(parentNode As Inventor.BrowserNode) As Inventor.BrowserNode
+    For nodeIndex As Integer = parentNode.BrowserNodes.Count To 1 Step -1
+        Dim childNode As Inventor.BrowserNode = parentNode.BrowserNodes.Item(nodeIndex)
+        If childNode.Visible Then Return childNode
+    Next
+
+    Return Nothing
+End Function
+
+'=======================================================================
+' Generates the next unused subassembly filename
+'=======================================================================
+Function GetNextFileName(folderPath As String, prefix As String, separator As String, _
+                          startingNumber As Integer, digitCount As Integer, extension As String) As String
+    Dim currentNumber As Integer = startingNumber
+
+    Do
+        Dim serialNumber As String = currentNumber.ToString(New String("0"c, digitCount))
+        Dim fileName As String = prefix & separator & serialNumber & extension
+        Dim candidatePath As String = System.IO.Path.Combine(folderPath, fileName)
+
+        If Not System.IO.File.Exists(candidatePath) Then Return candidatePath
+
+        If currentNumber = Integer.MaxValue Then
+            Throw New Exception("No available serial number could be found.")
+        End If
+
+        currentNumber += 1
+    Loop
+End Function
+
+'=======================================================================
+' Removes invalid Windows filename characters
+'=======================================================================
+Function CleanFileName(value As String) As String
+    If String.IsNullOrWhiteSpace(value) Then Return ""
+
+    Dim cleanedValue As String = value
+    For Each invalidCharacter As Char In System.IO.Path.GetInvalidFileNameChars()
+        cleanedValue = cleanedValue.Replace(invalidCharacter.ToString(), "")
+    Next
+
+    Return cleanedValue.Trim()
+End Function
+
+'=======================================================================
+' Creates a unique browser occurrence name
+'=======================================================================
+Function GetUniqueOccurrenceName(parentAssembly As Inventor.AssemblyDocument, desiredName As String) As String
+    Dim candidateName As String = desiredName
+    Dim occurrenceIndex As Integer = 1
+    Dim nameExists As Boolean
+
+    Do
+        nameExists = False
+
+        For i As Integer = 1 To parentAssembly.ComponentDefinition.Occurrences.Count
+            Dim existingOccurrence As Inventor.ComponentOccurrence = parentAssembly.ComponentDefinition.Occurrences.Item(i)
+
+            If String.Equals(existingOccurrence.Name, candidateName, StringComparison.OrdinalIgnoreCase) Then
+                nameExists = True
+                Exit For
+            End If
+        Next
+
+        If nameExists Then
+            candidateName = desiredName & "_" & occurrenceIndex.ToString()
+            occurrenceIndex += 1
+        End If
+    Loop While nameExists
+
+    Return candidateName
+End Function
